@@ -613,18 +613,19 @@ analyze_workflows() {
     echo ""
     echo "  Analizando archivo: $wf_file"
 
-    # Fetch workflow content (single API call)
-    local file_data=$(api_call_or_exit repos/"$org"/"$repo"/contents/.github/workflows/"$wf_file"?ref="$branch" 2>/dev/null || echo "")
-
-    if [[ -z "$file_data" ]]; then
+    # Fetch workflow content to temp file to avoid shell interpretation issues
+    local temp_file=$(mktemp)
+    if ! api_call_or_exit repos/"$org"/"$repo"/contents/.github/workflows/"$wf_file"?ref="$branch" > "$temp_file" 2>/dev/null; then
       echo "    - Error al obtener contenido"
+      rm -f "$temp_file"
       continue
     fi
 
-    # Extract fields from single response
-    local size=$(echo "$file_data" | jq -r '.size // "N/A"')
-    local sha=$(echo "$file_data" | jq -r '.sha // "N/A"')
-    local content_b64=$(echo "$file_data" | jq -r '.content // ""')
+    # Extract fields from response with error handling
+    local size sha content_b64
+    size=$(jq -r '.size // "N/A"' "$temp_file" 2>/dev/null || echo "N/A")
+    sha=$(jq -r '.sha // "N/A"' "$temp_file" 2>/dev/null || echo "N/A")
+    content_b64=$(jq -r '.content // ""' "$temp_file" 2>/dev/null || echo "")
 
     # Decode content
     local content=""
@@ -663,6 +664,9 @@ analyze_workflows() {
         found_ci_types[$type]=1
       fi
     done
+
+    # Cleanup temp file
+    rm -f "$temp_file"
 
   done <<< "$workflow_files"
 
