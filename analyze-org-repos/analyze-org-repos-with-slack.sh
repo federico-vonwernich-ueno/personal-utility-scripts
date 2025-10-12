@@ -392,11 +392,11 @@ EOF
   local end_cursor=""
   local page_count=0
 
-  echo "Fetching repository list from organization..."
+  echo "Fetching repository list from organization..." >&2
 
   while true; do
     page_count=$((page_count + 1))
-    echo "  Fetching page $page_count..."
+    echo "  Fetching page $page_count..." >&2
 
     # Call API with or without cursor
     local page_data
@@ -409,24 +409,24 @@ EOF
     # Parse response
     local repo_data=$(echo "$page_data" | jq -r '.data.organization.repositories' 2>/dev/null)
     if [[ -z "$repo_data" ]] || [[ "$repo_data" == "null" ]]; then
-      echo "❌ Failed to parse repository data"
+      echo "❌ Failed to parse repository data" >&2
       exit 1
     fi
 
     local new_repos=($(echo "$repo_data" | jq -r '.nodes[].name' 2>/dev/null))
     if [[ ${#new_repos[@]} -eq 0 ]]; then
-      echo "⚠️  No repositories found in this page"
+      echo "⚠️  No repositories found in this page" >&2
       break
     fi
 
     all_repos+=(${new_repos[@]})
-    echo "    Found ${#new_repos[@]} repositories (total: ${#all_repos[@]})"
+    echo "    Found ${#new_repos[@]} repositories (total: ${#all_repos[@]})" >&2
 
     local has_next=$(echo "$repo_data" | jq -r '.pageInfo.hasNextPage' 2>/dev/null)
     end_cursor=$(echo "$repo_data" | jq -r '.pageInfo.endCursor // ""' 2>/dev/null)
 
     if [[ "$has_next" != "true" ]]; then
-      echo "  ✅ All pages fetched"
+      echo "  ✅ All pages fetched" >&2
       break
     fi
   done
