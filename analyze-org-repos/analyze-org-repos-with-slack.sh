@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Script para generar lista de repositorios con workflows de CI reutilizables en ueno-tecnologia-org
+# Script para generar lista de repositorios con workflows de CI reutilizables
 # Con integración de notificaciones Slack
 # Requiere: gh, jq, python3, y acceso de lectura a los repositorios
 #
@@ -8,35 +8,27 @@
 #   LIMIT: Número máximo de repositorios a analizar (opcional)
 #          Si no se especifica, se analizan todos los repositorios
 
-setopt +o nomatch # Evita que zsh falle si no hay coincidencias de globbing
+#================================================================
+# SHELL CONFIGURATION
+#================================================================
 
-# Obtener la ruta del directorio del script
+setopt +o nomatch  # Evita que zsh falle si no hay coincidencias de globbing
+
+#================================================================
+# CONSTANTS AND CONFIGURATION
+#================================================================
+
+# Script directories
 SCRIPT_DIR="${0:a:h}"
 SLACK_NOTIFIER_DIR="${SCRIPT_DIR}/../slack-notifier"
 SLACK_NOTIFIER_SDK_PYTHON="${SLACK_NOTIFIER_DIR}/slack_notifier_sdk.py"
-# (El script viejo slack_notifier.py ya no se usa)
 
-# --- Añadido: configuración de log y redirección de salida ---
+# Logging configuration
 LOG_DIR="${SCRIPT_DIR}/logs"
 mkdir -p "$LOG_DIR"
 LOG_FILE="${LOG_DIR}/analyze-org-repos-$(date '+%Y%m%d-%H%M%S').log"
-# Crear/recortar el archivo log
 : > "$LOG_FILE"
-# Redirigir stdout y stderr a tee para escribir en log y seguir mostrando en consola
 exec > >(tee -a "$LOG_FILE") 2> >(tee -a "$LOG_FILE" >&2)
-# --- Fin añadido ---
-
-ORG="${1:-}"
-
-# Límite de repositorios (0 = sin límite)
-REPO_LIMIT=${2:-0}
-
-# Validar que se proporcionó la organización
-if [[ -z "$ORG" ]]; then
-  echo "Error: Debe especificar el nombre de la organización"
-  echo "Uso: $0 <ORGANIZATION> [LIMIT]"
-  exit 1
-fi
 
 # Rate limit configuration
 MAX_WAIT_TIME=600  # Maximum time to wait for rate limit reset (10 minutes)
@@ -44,60 +36,102 @@ RATE_LIMIT_THRESHOLD=100  # Start adaptive throttling when remaining < this
 MIN_DELAY=0.1  # Minimum delay between requests (seconds)
 MAX_DELAY=2.0  # Maximum delay between requests (seconds)
 
-# Checkpoint file for progress tracking
+# Checkpoint configuration
 CHECKPOINT_FILE="${SCRIPT_DIR}/.analyze-progress-checkpoint.txt"
 
-# Validar que el límite sea un número
-if [[ "$REPO_LIMIT" != "0" ]] && ! [[ "$REPO_LIMIT" =~ ^[0-9]+$ ]]; then
-  echo "Error: El límite debe ser un número entero positivo"
-  echo "Uso: $0 <ORGANIZATION> [LIMIT]"
-  exit 1
-fi
-
-# Archivos de salida para cada tipo de CI
+# Output files - repositories with unified CI
 MAVEN_OUTPUT_FILE="maven-repos.yml"
 GRADLE_OUTPUT_FILE="gradle-repos.yml"
 NODE_OUTPUT_FILE="node-repos.yml"
 GO_OUTPUT_FILE="go-repos.yml"
 
-# Archivos de salida para repos sin CI unificado
+# Output files - repositories without unified CI
 MAVEN_WITHOUT_CI_FILE="maven-repos-without-ci.yml"
 GRADLE_WITHOUT_CI_FILE="gradle-repos-without-ci.yml"
 NODE_WITHOUT_CI_FILE="node-repos-without-ci.yml"
 GO_WITHOUT_CI_FILE="go-repos-without-ci.yml"
 
-# Contadores para métricas de tipo de proyecto
+# Project type counters
 maven_repos=0
 gradle_repos=0
 node_repos=0
 go_repos=0
 other_repos=0
 
-# Contadores para métricas de CI
+# CI detection counters
 maven_ci_repos=0
 gradle_ci_repos=0
 node_ci_repos=0
 go_ci_repos=0
 
-# Rate limit tracking
+# Rate limit tracking variables
 last_rate_limit_check=0
 rate_limit_remaining=5000
 rate_limit_reset=0
 
-# Function to check and handle rate limits
+#================================================================
+# INPUT PARAMETERS AND VALIDATION
+#================================================================
+
+ORG="${1:-}"
+REPO_LIMIT=${2:-0}
+
+# Validate organization parameter
+if [[ -z "$ORG" ]]; then
+  echo "Error: Debe especificar el nombre de la organización"
+  echo "Uso: $0 <ORGANIZATION> [LIMIT]"
+  exit 1
+fi
+
+# Validate repository limit parameter
+if [[ "$REPO_LIMIT" != "0" ]] && ! [[ "$REPO_LIMIT" =~ ^[0-9]+$ ]]; then
+  echo "Error: El límite debe ser un número entero positivo"
+  echo "Uso: $0 <ORGANIZATION> [LIMIT]"
+  exit 1
+fi
+
+#================================================================
+# UTILITY FUNCTIONS
+#================================================================
+
+# Decode base64 content with fallback for different OS (GNU/macOS)
+# Args: $1 - base64 encoded string
+# Returns: decoded string via stdout
+decode_base64() {
+  local input="$1"
+  input="$(printf '%s' "$input" | tr -d '\r')"
+  if printf '%s' "$input" | base64 --decode >/dev/null 2>&1; then
+    printf '%s' "$input" | base64 --decode 2>/dev/null || true
+    return 0
+  elif printf '%s' "$input" | base64 -D >/dev/null 2>&1; then
+    printf '%s' "$input" | base64 -D 2>/dev/null || true
+    return 0
+  else
+    return 1
+  fi
+}
+
+#================================================================
+# GITHUB API FUNCTIONS
+#================================================================
+
+# Check and handle GitHub API rate limits
+# Returns: 0 on success, 2 if rate limit critical (caller should exit)
 check_rate_limit() {
   local current_time=$(date +%s)
-  # Check rate limit every 10 API calls or every 30 seconds
+  # Check rate limit every 30 seconds
   if (( current_time - last_rate_limit_check < 30 )); then
     return 0
   fi
   last_rate_limit_check=$current_time
+
   # Get current rate limit status
   local rate_info=$(gh api rate_limit 2>/dev/null || echo "{}")
   rate_limit_remaining=$(echo "$rate_info" | jq -r '.resources.core.remaining // 5000')
   rate_limit_reset=$(echo "$rate_info" | jq -r '.resources.core.reset // 0')
   local rate_limit=$(echo "$rate_info" | jq -r '.resources.core.limit // 5000')
   echo "[INFO] Rate limit status: $rate_limit_remaining/$rate_limit remaining" >&2
+
   # If rate limit is very low, wait or exit
   if (( rate_limit_remaining < 10 )); then
     local wait_time=$((rate_limit_reset - current_time))
@@ -115,7 +149,8 @@ check_rate_limit() {
   return 0
 }
 
-# Function to calculate adaptive delay based on rate limit
+# Calculate adaptive delay based on current rate limit status
+# Returns: delay in seconds via stdout
 get_adaptive_delay() {
   local remaining=$rate_limit_remaining
   local delay=$MIN_DELAY
@@ -134,13 +169,15 @@ get_adaptive_delay() {
   echo "$delay"
 }
 
-# Function to throttle API requests
+# Sleep to throttle API requests based on current rate limit
 throttle_request() {
   local delay=$(get_adaptive_delay)
   sleep "$delay"
 }
 
-# Function to make a safe gh api call with rate limit handling
+# Make a safe GitHub API call with rate limit handling and retries
+# Args: passes all arguments to 'gh api' command
+# Returns: API response via stdout, exit code 0 on success, 2 if rate limit critical
 safe_gh_api() {
   local max_retries=3
   local retry=0
@@ -206,7 +243,12 @@ safe_gh_api() {
   return 1
 }
 
-# Function to save checkpoint
+#================================================================
+# CHECKPOINT FUNCTIONS
+#================================================================
+
+# Save current progress to checkpoint file
+# Args: $1 - last processed repository name
 save_checkpoint() {
   local last_repo="$1"
   cat > "$CHECKPOINT_FILE" <<EOF
@@ -227,7 +269,8 @@ EOF
   echo "💾 Progress saved to checkpoint file: $CHECKPOINT_FILE"
 }
 
-# Function to load checkpoint
+# Load progress from checkpoint file
+# Returns: 0 if checkpoint found and loaded, 1 otherwise
 load_checkpoint() {
   if [[ -f "$CHECKPOINT_FILE" ]]; then
     echo "📂 Found checkpoint file. Loading previous progress..."
@@ -240,7 +283,7 @@ load_checkpoint() {
   return 1
 }
 
-# Function to clear checkpoint
+# Remove checkpoint file
 clear_checkpoint() {
   if [[ -f "$CHECKPOINT_FILE" ]]; then
     rm -f "$CHECKPOINT_FILE"
@@ -248,13 +291,18 @@ clear_checkpoint() {
   fi
 }
 
-# Función para enviar notificación Slack usando slack_notifier_sdk.py
+#================================================================
+# SLACK NOTIFICATION FUNCTIONS
+#================================================================
+
+# Send Slack notification using slack_notifier_sdk.py
 # Args:
-# 1: título
-# 2: mensaje (markdown)
-# 3: status (INFO|SUCCESS|ERROR|WARNING|DEBUG)
-# 4: fields en formato key:value,key2:val2 (opcional)
-# 5: lista de archivos separados por espacios a adjuntar (opcional)
+#   $1 - title
+#   $2 - message (markdown)
+#   $3 - status (INFO|SUCCESS|ERROR|WARNING|DEBUG)
+#   $4 - fields in format key:value,key2:val2 (optional)
+#   $5 - space-separated list of files to attach (optional)
+# Returns: 0 on success, non-zero on failure
 send_slack_notification() {
     local title="$1"; shift
     local message="$1"; shift
@@ -262,8 +310,8 @@ send_slack_notification() {
     local fields="${1:-}"; shift || true
     local files_list="${1:-}"; shift || true
 
-    # Validaciones previas: token y canal (si dry-run forzado se omite)
-    local dry_run_flag="${SLACK_DRY_RUN:-}"  # cualquier valor => dry-run
+    # Check for required environment variables (skip if dry-run)
+    local dry_run_flag="${SLACK_DRY_RUN:-}"
     if [[ -z "$SLACK_BOT_TOKEN" && -z "$dry_run_flag" ]]; then
       echo "[INFO] SLACK_BOT_TOKEN no definido: omitiendo envío Slack (title='$title')" >&2
       return 3
@@ -273,19 +321,20 @@ send_slack_notification() {
       return 4
     fi
 
-    # Normalizar status a minúsculas aceptadas por slack_notifier_sdk.py
+    # Normalize status to lowercase
     local status_lc="${notif_status:l}"
     case "$status_lc" in
-      success|error|failure|warning|info|debug) ;; # válido
+      success|error|failure|warning|info|debug) ;;
       *) status_lc="info" ;;
     esac
 
+    # Check if SDK script exists
     if [[ ! -f "$SLACK_NOTIFIER_SDK_PYTHON" ]]; then
       echo "[WARNING] Slack notifier SDK no encontrado en: $SLACK_NOTIFIER_SDK_PYTHON" >&2
       return 2
     fi
 
-    # Selección automática de template según status
+    # Select template based on status
     local template_name="simple"
     case "$status_lc" in
       success) template_name="workflow_success" ;;
@@ -293,7 +342,7 @@ send_slack_notification() {
       *) template_name="simple" ;;
     esac
 
-    # Convertir fields en variables para el template (--var KEY=VAL) y generar METADATA separado
+    # Convert fields to template variables and metadata
     local -a template_vars_args=()
     local metadata_md=""
     if [[ -n "$fields" ]]; then
@@ -302,10 +351,9 @@ send_slack_notification() {
         [[ -z "$pair" ]] && continue
         if [[ "$pair" == *:* ]]; then
           local k="${pair%%:*}"; local v="${pair#*:}"
-          # Construir bullets de metadatos (cada par en su línea)
           local bullet_key="$k"
           metadata_md+=$'• '*"${bullet_key}"$': '*"${v}"$'\n'
-          # Sanitizar clave para variable
+          # Sanitize key for variable name
           local k_clean="${k//[^A-Za-z0-9]/_}"
             k_clean="${k_clean:u}"
             case "$k_clean" in
@@ -316,32 +364,31 @@ send_slack_notification() {
       done
     fi
 
-    # Recortar salto final y envolver en encabezado si hay contenido
+    # Add metadata header if present
     if [[ -n "$metadata_md" ]]; then
       metadata_md="*Metadatos:*\n${metadata_md%\n}"
-      # Pasar como variable METADATA para usar bloque dedicado del template
       template_vars_args+=(--var "METADATA=${metadata_md}")
     fi
 
-    # Variables adicionales útiles
+    # Add additional useful variables
     template_vars_args+=(--var "ORG=${ORG}")
     template_vars_args+=(--var "REPO_LIMIT=${REPO_LIMIT}")
 
-    # Construir comando base
+    # Build base command
     local -a cmd=(python3 "$SLACK_NOTIFIER_SDK_PYTHON" --title "$title" --status "$status_lc" --template "$template_name" ${template_vars_args[@]})
 
-    # Añadir mensaje sólo si no está vacío
+    # Add message if not empty
     if [[ -n "$message" ]]; then
       cmd+=(--message "$message")
     fi
 
-    # Añadir dry-run si variable de entorno SLACK_DRY_RUN está definida
+    # Add dry-run flag if set
     if [[ -n "$dry_run_flag" ]]; then
       cmd+=(--dry-run)
       echo "[DRY-RUN] (Slack)" >&2
     fi
 
-    # Construir array de archivos si existe files_list
+    # Add files if present
     if [[ -n "$files_list" ]]; then
       local -a valid_files=()
       for f in ${(z)files_list}; do
@@ -358,24 +405,17 @@ send_slack_notification() {
 
     echo "Enviando notificación Slack: '$title' (status=$status_lc, template=$template_name)" >&2
 
-    # --- Mejorado visualmente dentro del mismo log: separar la salida del notificador ---
+    # Execute command and capture output
     echo "----- INICIO SLACK NOTIFIER OUTPUT -----" >&2
-
-    # Capturar salida en temporal para conservar rc real
     tmp_out="$(mktemp -t slack-notifier.XXXXXX 2>/dev/null || mktemp)"
     if "${cmd[@]}" >"$tmp_out" 2>&1; then
       rc=0
     else
       rc=$?
     fi
-
-    # Reimprimir la salida prefijando cada línea con [SLACK] (llega a la consola y al log principal)
     sed 's/^/   [SLACK] /' "$tmp_out" >&2
-
     echo "----- FIN SLACK NOTIFIER OUTPUT (rc=$rc) -----" >&2
-
     rm -f "$tmp_out" 2>/dev/null || true
-    # --- Fin mejora visual ---
 
     if (( rc != 0 )); then
       echo "[WARNING] Falló el envío de notificación Slack (rc=$rc, title='$title')" >&2
@@ -383,7 +423,11 @@ send_slack_notification() {
     return $rc
 }
 
-# Guardar hora de inicio
+#================================================================
+# MAIN EXECUTION
+#================================================================
+
+# Record start time
 START_TIME=$(date +%s)
 START_TIME_FORMATTED=$(date '+%Y-%m-%d %H:%M:%S')
 
@@ -431,13 +475,13 @@ if [[ "$RESUME_FROM_CHECKPOINT" != "true" ]]; then
   echo "✅ Archivos de salida inicializados"
 fi
 
-# Preparar mensaje de inicio con información del límite
+# Prepare start message with limit information
 LIMIT_MSG=""
 if [[ $REPO_LIMIT -gt 0 ]]; then
   LIMIT_MSG=" (limitado a $REPO_LIMIT repositorios)"
 fi
 
-# Enviar notificación de inicio
+# Send start notification
 if send_slack_notification \
     "📊 Análisis de Repositorios - Iniciado" \
     "Iniciando análisis de repositorios en la organización \`$ORG\`$LIMIT_MSG" \
@@ -452,12 +496,12 @@ echo "\n==============================="
 echo "Obteniendo lista de repositorios..."
 echo "===============================\n"
 
-# Listar todos los repositorios (maneja paginación manualmente)
+# Fetch all repositories using GraphQL with pagination
 REPOS=()
-END_CURSOR=""  # usar cadena vacía para primera página
+END_CURSOR=""
 page_count=0
 
-# Definir query GraphQL multilinea (sin escapes \n que rompan sintaxis)
+# Define GraphQL query
 read -r -d '' REPOS_QUERY <<'EOF'
 query($owner: String!, $endCursor: String) {
   organization(login: $owner) {
@@ -479,7 +523,7 @@ echo "Fetching repository list from organization..."
 while true; do
   page_count=$((page_count + 1))
   echo "  Fetching page $page_count..."
-  # Llamar a la API; sólo pasar endCursor si no está vacío
+  # Call API with or without cursor
   if [[ -z "$END_CURSOR" ]]; then
     PAGE_REPOS=$(safe_gh_api graphql -F owner="$ORG" -f query="$REPOS_QUERY")
   else
@@ -519,7 +563,7 @@ done
 total_repos=${#REPOS[@]}
 echo "Se encontraron $total_repos repositorios en total.\n"
 
-# Aplicar límite si está configurado
+# Apply repository limit if configured
 if [[ $REPO_LIMIT -gt 0 ]] && [[ $total_repos -gt $REPO_LIMIT ]]; then
   echo "⚠ Aplicando límite: analizando solo los primeros $REPO_LIMIT repositorios"
   REPOS=(${REPOS[@]:0:$REPO_LIMIT})
@@ -528,7 +572,7 @@ fi
 
 echo "Se analizarán $total_repos repositorios.\n"
 
-# Enumerar los repositorios al inicio
+# List repositories at start
 if [[ $total_repos -eq 0 ]]; then
   echo "No se encontraron repositorios en la organización: $ORG."
   if ! send_slack_notification \
@@ -548,7 +592,7 @@ echo "\n==============================="
 echo "Procesando repositorios..."
 echo "===============================\n"
 
-# Mostrar el número del repositorio durante el procesamiento
+# Process each repository
 COUNTER=1
 for REPO in $REPOS; do
   # Check if we should skip this repo (already processed in checkpoint)
@@ -571,10 +615,8 @@ for REPO in $REPOS; do
   DEFAULT_BRANCH=$(gh repo view "$ORG/$REPO" --json defaultBranchRef -q .defaultBranchRef.name)
   echo "Branch por defecto: $DEFAULT_BRANCH"
 
-  # Variables para rastrear el tipo de proyecto
+  # Detect project type
   PROJECT_TYPE=""
-
-  # Verificar tipo de proyecto
   if safe_gh_api repos/$ORG/$REPO/contents/pom.xml?ref=$DEFAULT_BRANCH >/dev/null 2>&1; then
     exit_code=$?
     if (( exit_code == 2 )); then
@@ -625,7 +667,7 @@ for REPO in $REPOS; do
     echo "    -> Contador 'Otros': $other_repos"
   fi
 
-  # Listar archivos en .github/workflows
+  # List workflow files in .github/workflows
   FILES=$(safe_gh_api repos/$ORG/$REPO/contents/.github/workflows?ref=$DEFAULT_BRANCH --jq '.[] | select(.name | endswith(".yml")) | .name' 2>/dev/null || echo "")
   exit_code=$?
   if (( exit_code == 2 )); then
@@ -634,39 +676,23 @@ for REPO in $REPOS; do
     exit 3
   fi
 
-  # Flags para determinar si se encontró CI unificado
+  # Initialize CI detection flags
   maven_found=0
   gradle_found=0
   node_found=0
   go_found=0
 
   if [[ -n "$FILES" ]]; then
-    # Mostrar conteo y lista numerada para más claridad
+    # Show workflow count and numbered list
     WF_COUNT=$(printf "%s\n" "$FILES" | sed '/^\s*$/d' | wc -l | tr -d ' ')
     echo "Workflows encontrados: $WF_COUNT"
     printf "%s\n" "$FILES" | nl -w2 -s'. ' | sed 's/^/  /'
 
-    # Process each workflow file - avoid subshell to preserve flag variables
+    # Process each workflow file
     while IFS= read -r WF; do
       [[ -z "$WF" ]] && continue
 
-      # Decodificador base64 con fallback (GNU / macOS). Definido aquí localmente.
-      decode_base64() {
-        local input="$1"
-        # eliminar saltos de línea que puedan venir en la cadena
-        input="$(printf '%s' "$input" | tr -d '\r')"
-        if printf '%s' "$input" | base64 --decode >/dev/null 2>&1; then
-          printf '%s' "$input" | base64 --decode 2>/dev/null || true
-          return 0
-        elif printf '%s' "$input" | base64 -D >/dev/null 2>&1; then
-          printf '%s' "$input" | base64 -D 2>/dev/null || true
-          return 0
-        else
-          return 1
-        fi
-      }
-
-      # Obtener campos individuales con --jq para evitar pasar JSON potencialmente problemático a jq
+      # Fetch workflow file metadata and content
       SIZE=$(safe_gh_api repos/"$ORG"/"$REPO"/contents/.github/workflows/"$WF"?ref="$DEFAULT_BRANCH" --jq '.size' 2>/dev/null || echo "N/A")
       if (( $? == 2 )); then
         save_checkpoint "$REPO"
@@ -688,7 +714,7 @@ for REPO in $REPOS; do
         exit 3
       fi
 
-      # Decodificar contenido si existe; si falla, dejar CONTENT vacío
+      # Decode content
       CONTENT=""
       if [[ -n "$CONTENT_B64" && "$CONTENT_B64" != "null" ]]; then
         if CONTENT_DECODED="$(decode_base64 "$CONTENT_B64")"; then
@@ -698,7 +724,7 @@ for REPO in $REPOS; do
         fi
       fi
 
-      # Métricas simples del contenido (proteger cuando CONTENT esté vacío)
+      # Calculate content metrics
       if [[ -n "$CONTENT" ]]; then
         LINES=$(printf "%s" "$CONTENT" | sed -n '1,$p' | wc -l | tr -d ' ')
         USES_COUNT=$(printf "%s" "$CONTENT" | grep -c -E '^\s*uses:' || true)
@@ -709,11 +735,11 @@ for REPO in $REPOS; do
         RUN_COUNT=0
       fi
 
-      # Detectar referencias a los workflows reutilizables (listado único)
+      # Detect references to reusable workflows
       REFS=$(printf "%s" "$CONTENT" | grep -oE '(maven-ci.yml|gradle-ci.yml|node-ci.yml|go-ci.yml)' | sort -u | tr '\n' ',' | sed 's/,$//')
       if [[ -z "$REFS" ]]; then REFS="(ninguna)"; fi
 
-      # Impresión formateada y más clara
+      # Print workflow analysis
       echo ""
       echo "  Analizando archivo: $WF"
       echo "    - Tamaño: $SIZE bytes"
@@ -722,7 +748,7 @@ for REPO in $REPOS; do
       echo "    - Occurencias: uses=$USES_COUNT  run=$RUN_COUNT"
       echo "    - Referencias detectadas: $REFS"
 
-      # Buscar maven-ci.yml
+      # Check for maven-ci.yml
       if [[ $maven_found -eq 0 ]] && printf "%s" "$CONTENT" | grep -q 'maven-ci.yml'; then
         echo "    ✔ Se encontró referencia a maven-ci.yml en $WF"
         maven_ci_repos=$((maven_ci_repos + 1))
@@ -732,7 +758,7 @@ for REPO in $REPOS; do
         maven_found=1
       fi
 
-      # Buscar gradle-ci.yml
+      # Check for gradle-ci.yml
       if [[ $gradle_found -eq 0 ]] && printf "%s" "$CONTENT" | grep -q 'gradle-ci.yml'; then
         echo "    ✔ Se encontró referencia a gradle-ci.yml en $WF"
         gradle_ci_repos=$((gradle_ci_repos + 1))
@@ -742,7 +768,7 @@ for REPO in $REPOS; do
         gradle_found=1
       fi
 
-      # Buscar node-ci.yml
+      # Check for node-ci.yml
       if [[ $node_found -eq 0 ]] && printf "%s" "$CONTENT" | grep -q 'node-ci.yml'; then
         echo "    ✔ Se encontró referencia a node-ci.yml en $WF"
         node_ci_repos=$((node_ci_repos + 1))
@@ -752,7 +778,7 @@ for REPO in $REPOS; do
         node_found=1
       fi
 
-      # Buscar go-ci.yml
+      # Check for go-ci.yml
       if [[ $go_found -eq 0 ]] && printf "%s" "$CONTENT" | grep -q 'go-ci.yml'; then
         echo "    ✔ Se encontró referencia a go-ci.yml en $WF"
         go_ci_repos=$((go_ci_repos + 1))
@@ -766,7 +792,7 @@ for REPO in $REPOS; do
     echo "No se encontraron workflows en .github/workflows para $REPO."
   fi
 
-  # Guardar repos sin CI unificado según su tipo de proyecto
+  # Save repositories without unified CI
   if [[ "$PROJECT_TYPE" == "maven" ]] && [[ $maven_found -eq 0 ]]; then
     echo ""
     echo "  ⚠ Repositorio Maven sin CI unificado"
@@ -808,7 +834,7 @@ done
 # Clear checkpoint on successful completion
 clear_checkpoint
 
-# Calcular tiempo de ejecución
+# Calculate execution time
 END_TIME=$(date +%s)
 END_TIME_FORMATTED=$(date '+%Y-%m-%d %H:%M:%S')
 DURATION=$((END_TIME - START_TIME))
@@ -847,11 +873,10 @@ echo "  Con CI unificado: *-repos.yml"
 echo "  Sin CI unificado: *-repos-without-ci.yml"
 echo "==============================="
 
-# Preparar mensaje para Slack con resumen
+# Prepare Slack summary message
 TOTAL_WITH_CI=$((maven_ci_repos + gradle_ci_repos + node_ci_repos + go_ci_repos))
 TOTAL_WITHOUT_CI=$((maven_repos - maven_ci_repos + gradle_repos - gradle_ci_repos + node_repos - node_ci_repos + go_repos - go_ci_repos))
 
-# Construir mensaje multilinea (Markdown) con here-doc para preservar saltos
 SLACK_MESSAGE=$(cat <<EOF
 *Repositorios analizados:* $total_repos
 *Con CI unificado:* $TOTAL_WITH_CI
@@ -868,18 +893,16 @@ SLACK_MESSAGE=$(cat <<EOF
 EOF
 )
 
-# Si hubo límite, añadir línea adicional
+# Add limit warning if applicable
 if [[ $REPO_LIMIT -gt 0 ]]; then
   SLACK_MESSAGE+=$'\n⚠️ _Análisis limitado a '$REPO_LIMIT$' repositorios (modo prueba)_'
 fi
 
-# Construir lista de archivos generados a adjuntar (todos los .yml creados por el script)
+# Build list of files to attach
 ATTACH_FILES="$MAVEN_OUTPUT_FILE $GRADLE_OUTPUT_FILE $NODE_OUTPUT_FILE $GO_OUTPUT_FILE $MAVEN_WITHOUT_CI_FILE $GRADLE_WITHOUT_CI_FILE $NODE_WITHOUT_CI_FILE $GO_WITHOUT_CI_FILE"
-
-# --- Añadido: incluir el archivo de log en los adjuntos si existe ---
 ATTACH_FILES="$ATTACH_FILES $LOG_FILE"
-# --- Fin añadido ---
 
+# Send completion notification
 if send_slack_notification \
     "✅ Análisis de Repositorios - Completado" \
     "$SLACK_MESSAGE" \
