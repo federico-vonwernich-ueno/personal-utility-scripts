@@ -668,12 +668,22 @@ for REPO in $REPOS; do
   fi
 
   # List workflow files in .github/workflows
-  FILES=$(safe_gh_api repos/$ORG/$REPO/contents/.github/workflows?ref=$DEFAULT_BRANCH --jq '.[] | select(.name | endswith(".yml")) | .name' 2>/dev/null || echo "")
+  FILES_RESPONSE=$(safe_gh_api repos/$ORG/$REPO/contents/.github/workflows?ref=$DEFAULT_BRANCH 2>&1)
   exit_code=$?
+
+  # Check for rate limit
   if (( exit_code == 2 )); then
     save_checkpoint "$REPO"
     echo "⚠️  Rate limit reached. Progress saved. Exiting..."
     exit 3
+  fi
+
+  # Check if directory exists (404 means no .github/workflows directory)
+  if echo "$FILES_RESPONSE" | grep -q "Not Found"; then
+    FILES=""
+  else
+    # Extract only .yml files
+    FILES=$(echo "$FILES_RESPONSE" | jq -r '.[] | select(.name | endswith(".yml")) | .name' 2>/dev/null || echo "")
   fi
 
   # Initialize CI detection flags
