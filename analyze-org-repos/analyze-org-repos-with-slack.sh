@@ -591,11 +591,21 @@ analyze_workflows() {
   local org="$2"
   local branch="$3"
 
-  # Get list of workflow files
-  local workflow_files=$(api_call_or_exit repos/$org/$repo/contents/.github/workflows?ref=$branch --jq '.[] | select(.name | endswith(".yml")) | .name' 2>/dev/null || echo "")
+  # Check if .github/workflows exists
+  local workflows_check=$(api_call_or_exit repos/$org/$repo/contents/.github/workflows?ref=$branch 2>&1)
+  local check_status=$?
+
+  # Check if the directory doesn't exist (404 error)
+  if [[ $check_status -ne 0 ]] || echo "$workflows_check" | grep -qi "not found\|404"; then
+    echo "  ℹ El directorio .github/workflows no existe en este repositorio"
+    return 0
+  fi
+
+  # Get list of workflow files (only .yml files)
+  local workflow_files=$(echo "$workflows_check" | jq -r '.[] | select(.name | endswith(".yml") or endswith(".yaml")) | .name' 2>/dev/null || echo "")
 
   if [[ -z "$workflow_files" ]]; then
-    echo "  ℹ No se encontraron workflows en .github/workflows"
+    echo "  ℹ No se encontraron archivos .yml en .github/workflows"
     return 0
   fi
 
