@@ -3,7 +3,8 @@
 # Con integración de notificaciones Slack
 # Requiere: gh, jq, python3, y acceso de lectura a los repositorios
 #
-# Uso: ./analyze-org-repos-with-slack.sh [LIMIT]
+# Uso: ./analyze-org-repos-with-slack.sh <ORGANIZATION> [LIMIT]
+#   ORGANIZATION: Nombre de la organización de GitHub (requerido)
 #   LIMIT: Número máximo de repositorios a analizar (opcional)
 #          Si no se especifica, se analizan todos los repositorios
 
@@ -25,10 +26,17 @@ LOG_FILE="${LOG_DIR}/analyze-org-repos-$(date '+%Y%m%d-%H%M%S').log"
 exec > >(tee -a "$LOG_FILE") 2> >(tee -a "$LOG_FILE" >&2)
 # --- Fin añadido ---
 
-ORG="some-org"
+ORG="${1:-}"
 
 # Límite de repositorios (0 = sin límite)
-REPO_LIMIT=${1:-0}
+REPO_LIMIT=${2:-0}
+
+# Validar que se proporcionó la organización
+if [[ -z "$ORG" ]]; then
+  echo "Error: Debe especificar el nombre de la organización"
+  echo "Uso: $0 <ORGANIZATION> [LIMIT]"
+  exit 1
+fi
 
 # Rate limit configuration
 MAX_WAIT_TIME=600  # Maximum time to wait for rate limit reset (10 minutes)
@@ -42,7 +50,7 @@ CHECKPOINT_FILE="${SCRIPT_DIR}/.analyze-progress-checkpoint.txt"
 # Validar que el límite sea un número
 if [[ "$REPO_LIMIT" != "0" ]] && ! [[ "$REPO_LIMIT" =~ ^[0-9]+$ ]]; then
   echo "Error: El límite debe ser un número entero positivo"
-  echo "Uso: $0 [LIMIT]"
+  echo "Uso: $0 <ORGANIZATION> [LIMIT]"
   exit 1
 fi
 
