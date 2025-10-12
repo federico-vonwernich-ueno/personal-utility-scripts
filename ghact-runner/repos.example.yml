@@ -1,0 +1,288 @@
+# Example Configuration for ghact-runner.py
+# This file demonstrates all available configuration options
+
+# ============================================================================
+# REQUIRED: Directory where repositories will be cloned
+# ============================================================================
+checkout_dir: ~/ghact-repos  # Supports ~ expansion and relative paths
+
+# ============================================================================
+# REQUIRED: List of repositories to process
+# ============================================================================
+repos:
+  # Simple format: just provide the repo identifier
+  # Supports multiple formats:
+  #   - org/repo (GitHub shorthand)
+  #   - https://github.com/org/repo.git (HTTPS URL)
+  #   - git@github.com:org/repo.git (SSH URL)
+
+  - octocat/Hello-World
+  - https://github.com/torvalds/linux
+
+  # Advanced format: specify branch and custom directory name
+  - url: microsoft/vscode
+    name: vscode-custom-dir  # Optional: override directory name
+    branch: main             # Optional: specific branch to clone
+
+  - url: facebook/react
+    branch: main
+
+  - url: vuejs/vue
+    name: vue3
+    branch: main
+
+# ============================================================================
+# REQUIRED: Workflow Definition (choose ONE method)
+# ============================================================================
+
+# METHOD 1: External workflow file
+# Uncomment this to use an external YAML file
+# workflow_file: ./workflows/security-scan.yml
+
+# METHOD 2: Inline workflow definition
+# Uncomment this to define workflow directly in config
+workflow_inline: |
+  name: Local CI Check
+  on: [push]
+
+  jobs:
+    build-and-test:
+      runs-on: ubuntu-latest
+
+      steps:
+        - name: Checkout code
+          uses: actions/checkout@v3
+
+        - name: Setup Node.js
+          uses: actions/setup-node@v3
+          with:
+            node-version: '18'
+
+        - name: Install dependencies
+          run: |
+            if [ -f package.json ]; then
+              npm ci
+            else
+              echo "No package.json found, skipping npm install"
+            fi
+
+        - name: Run linting
+          run: |
+            if [ -f package.json ] && grep -q "\"lint\"" package.json; then
+              npm run lint || echo "Linting failed but continuing..."
+            else
+              echo "No lint script found"
+            fi
+
+        - name: Run tests
+          run: |
+            if [ -f package.json ] && grep -q "\"test\"" package.json; then
+              npm test || echo "Tests failed but continuing..."
+            else
+              echo "No test script found"
+            fi
+
+        - name: Build project
+          run: |
+            if [ -f package.json ] && grep -q "\"build\"" package.json; then
+              npm run build || echo "Build failed but continuing..."
+            else
+              echo "No build script found"
+            fi
+
+# ============================================================================
+# Workflow filename (will be placed in .github/workflows/)
+# ============================================================================
+workflow_filename: local-ci.yml  # Default: local-ci.yml
+
+# ============================================================================
+# Act Configuration
+# ============================================================================
+
+# Event to trigger when running act
+# Common options: push, pull_request, workflow_dispatch, schedule
+act_event: push  # Default: push
+
+# Platform mappings: specify Docker images for GitHub runner labels
+# This is useful for using faster/smaller images with act
+platform_mappings:
+  ubuntu-latest: catthehacker/ubuntu:act-latest
+  ubuntu-22.04: catthehacker/ubuntu:act-22.04
+  ubuntu-20.04: catthehacker/ubuntu:act-20.04
+  # For ARM/M1 Macs, you might need:
+  # ubuntu-latest: catthehacker/ubuntu:act-latest-arm64
+
+# Additional arguments passed directly to act
+act_args:
+  - --verbose                           # Show verbose output
+  # - --pull=false                      # Don't pull images (use cached)
+  # - --secret-file=.secrets            # Load secrets from file
+  # - --env-file=.env.local             # Load environment variables
+  # - --container-architecture=linux/amd64  # For M1 Macs
+  # - --artifact-server-path=/tmp/artifacts  # Store artifacts locally
+  # - -j test                           # Run only specific job
+  # - --reuse                           # Reuse containers between runs
+
+# ============================================================================
+# Error Handling
+# ============================================================================
+
+# Continue processing repos even if one fails?
+# true  = process all repos, collect all results (recommended)
+# false = stop on first failure
+continue_on_error: true  # Default: true
+
+# ============================================================================
+# Example Configurations for Common Use Cases
+# ============================================================================
+
+# ----------------------------
+# EXAMPLE 1: Security Scanning
+# ----------------------------
+# repos:
+#   - myorg/frontend
+#   - myorg/backend
+#   - myorg/api
+#
+# workflow_inline: |
+#   name: Security Scan
+#   on: [push]
+#   jobs:
+#     trivy:
+#       runs-on: ubuntu-latest
+#       steps:
+#         - uses: actions/checkout@v3
+#         - name: Run Trivy vulnerability scanner
+#           uses: aquasecurity/trivy-action@master
+#           with:
+#             scan-type: 'fs'
+#             format: 'table'
+#             exit-code: '0'  # Don't fail on vulnerabilities
+#
+# workflow_filename: security-scan.yml
+# act_event: push
+# continue_on_error: true
+
+# ----------------------------
+# EXAMPLE 2: Code Quality Check
+# ----------------------------
+# repos:
+#   - myorg/project-a
+#   - myorg/project-b
+#
+# workflow_inline: |
+#   name: Code Quality
+#   on: [push]
+#   jobs:
+#     lint:
+#       runs-on: ubuntu-latest
+#       steps:
+#         - uses: actions/checkout@v3
+#         - uses: actions/setup-node@v3
+#           with:
+#             node-version: '18'
+#         - run: npm ci
+#         - run: npm run lint
+#         - run: npm run format:check
+#
+# workflow_filename: code-quality.yml
+# act_event: push
+# platform_mappings:
+#   ubuntu-latest: catthehacker/ubuntu:act-latest
+# act_args:
+#   - --verbose
+# continue_on_error: true
+
+# ----------------------------
+# EXAMPLE 3: Dependency Audit
+# ----------------------------
+# repos:
+#   - url: myorg/frontend
+#     branch: main
+#   - url: myorg/backend
+#     branch: develop
+#
+# workflow_inline: |
+#   name: Dependency Audit
+#   on: [push]
+#   jobs:
+#     audit:
+#       runs-on: ubuntu-latest
+#       steps:
+#         - uses: actions/checkout@v3
+#         - uses: actions/setup-node@v3
+#         - name: Audit npm dependencies
+#           run: npm audit --audit-level=moderate || true
+#         - name: Check for outdated packages
+#           run: npm outdated || true
+#
+# workflow_filename: dependency-audit.yml
+# act_event: push
+# continue_on_error: true
+
+# ----------------------------
+# EXAMPLE 4: License Compliance
+# ----------------------------
+# repos:
+#   - company/project1
+#   - company/project2
+#   - company/project3
+#
+# workflow_inline: |
+#   name: License Check
+#   on: [push]
+#   jobs:
+#     license:
+#       runs-on: ubuntu-latest
+#       steps:
+#         - uses: actions/checkout@v3
+#         - name: Check for LICENSE file
+#           run: |
+#             if [ ! -f LICENSE ] && [ ! -f LICENSE.md ]; then
+#               echo "WARNING: No LICENSE file found"
+#               exit 1
+#             fi
+#         - name: Install license-checker
+#           run: npm install -g license-checker
+#         - name: Check dependency licenses
+#           run: license-checker --summary || true
+#
+# workflow_filename: license-check.yml
+# act_event: push
+# continue_on_error: true
+
+# ----------------------------
+# EXAMPLE 5: Build Verification
+# ----------------------------
+# repos:
+#   - myorg/webapp
+#   - myorg/api-service
+#
+# workflow_inline: |
+#   name: Build Check
+#   on: [push]
+#   jobs:
+#     build:
+#       runs-on: ubuntu-latest
+#       steps:
+#         - uses: actions/checkout@v3
+#         - uses: actions/setup-node@v3
+#           with:
+#             node-version: '18'
+#         - run: npm ci
+#         - run: npm run build
+#         - name: Check build artifacts
+#           run: |
+#             if [ ! -d dist ] && [ ! -d build ]; then
+#               echo "ERROR: No build output found"
+#               exit 1
+#             fi
+#             echo "Build successful!"
+#
+# workflow_filename: build-check.yml
+# act_event: push
+# platform_mappings:
+#   ubuntu-latest: catthehacker/ubuntu:act-latest
+# act_args:
+#   - --pull=false  # Use cached images
+# continue_on_error: false  # Stop on first build failure
