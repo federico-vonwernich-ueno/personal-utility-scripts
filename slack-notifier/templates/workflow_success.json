@@ -1,0 +1,30 @@
+{
+  "username": "Workflow Monitor",
+  "icon_emoji": "{{ICON}}",
+  "blocks": [
+    {
+      "type": "header",
+      "text": {
+        "type": "plain_text",
+        "text": "{{ICON}} {{TITLE}}",
+        "emoji": true
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "{{MESSAGE}}"
+      }
+    },
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "mrkdwn",
+          "text": "Status: *{{STATUS}}*"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+slack-sdk>=3.21.0
+requests>=2.20.0
+# Optional: pin exact versions in your environment if desired
+# Optional dependency to allow loading YAML config files with --config
+PyYAML>=6.0

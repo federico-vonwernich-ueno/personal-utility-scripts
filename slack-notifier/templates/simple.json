@@ -1,0 +1,21 @@
+{
+  "username": "Notification Bot",
+  "icon_emoji": "{{ICON}}",
+  "blocks": [
+    {
+      "type": "header",
+      "text": {
+        "type": "plain_text",
+        "text": "{{TITLE}}",
+        "emoji": true
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "{{MESSAGE}}"
+      }
+    }
+  ]
+}
