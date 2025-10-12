@@ -563,6 +563,7 @@ send_slack_notification() {
 
 # Detect project type by checking for marker files
 # Returns: "maven"|"gradle"|"node"|"go"|"other"
+# Also prints to stderr which marker file was found
 detect_project_type() {
   local repo="$1"
   local org="$2"
@@ -572,12 +573,14 @@ detect_project_type() {
     local markers=(${(z)PROJECT_MARKERS[$type]})
     for marker in $markers; do
       if api_call_or_exit repos/$org/$repo/contents/$marker?ref=$branch >/dev/null 2>&1; then
+        echo "    ✓ Archivo detectado: $marker" >&2
         echo "$type"
         return 0
       fi
     done
   done
 
+  echo "    ℹ No se encontraron archivos de proyecto conocidos" >&2
   echo "other"
 }
 
@@ -592,13 +595,14 @@ analyze_workflows() {
   local workflow_files=$(api_call_or_exit repos/$org/$repo/contents/.github/workflows?ref=$branch --jq '.[] | select(.name | endswith(".yml")) | .name' 2>/dev/null || echo "")
 
   if [[ -z "$workflow_files" ]]; then
-    echo "No se encontraron workflows en .github/workflows para $repo."
+    echo "  ℹ No se encontraron workflows en .github/workflows"
     return 0
   fi
 
   local wf_count=$(printf "%s\n" "$workflow_files" | sed '/^\s*$/d' | wc -l | tr -d ' ')
-  echo "Workflows encontrados: $wf_count"
-  printf "%s\n" "$workflow_files" | nl -w2 -s'. ' | sed 's/^/  /'
+  echo ""
+  echo "  📁 Archivos en .github/workflows/ ($wf_count archivos):"
+  printf "%s\n" "$workflow_files" | nl -w2 -s'. ' | sed 's/^/    /'
 
   # Track which CI types were found
   typeset -A found_ci_types
@@ -607,16 +611,18 @@ analyze_workflows() {
   done
 
   # Process each workflow file
+  echo ""
+  echo "  🔍 Análisis detallado de workflows:"
   while IFS= read -r wf_file; do
     [[ -z "$wf_file" ]] && continue
 
     echo ""
-    echo "  Analizando archivo: $wf_file"
+    echo "    📄 $wf_file"
 
     # Fetch workflow content to temp file to avoid shell interpretation issues
     local temp_file=$(mktemp)
     if ! api_call_or_exit repos/"$org"/"$repo"/contents/.github/workflows/"$wf_file"?ref="$branch" > "$temp_file" 2>/dev/null; then
-      echo "    - Error al obtener contenido"
+      echo "       ❌ Error al obtener contenido"
       rm -f "$temp_file"
       continue
     fi
@@ -650,17 +656,17 @@ analyze_workflows() {
     [[ -z "$refs" ]] && refs="(ninguna)"
 
     # Display info
-    echo "    - Tamaño: $size bytes"
-    echo "    - SHA: $sha"
-    echo "    - Líneas: $lines"
-    echo "    - Occurencias: uses=$uses_count  run=$run_count"
-    echo "    - Referencias detectadas: $refs"
+    echo "       • Tamaño: $size bytes"
+    echo "       • SHA: $sha"
+    echo "       • Líneas: $lines"
+    echo "       • Usos de acciones: uses=$uses_count, run=$run_count"
+    echo "       • Referencias a CI unificado: $refs"
 
     # Check for each CI type
     for type in ${(k)CI_WORKFLOWS}; do
       local pattern="${CI_WORKFLOWS[$type]}"
       if [[ ${found_ci_types[$type]} -eq 0 ]] && printf "%s" "$content" | grep -q "$pattern"; then
-        echo "    ✔ Se encontró referencia a $pattern en $wf_file"
+        echo "       ✔ Se encontró referencia a $pattern"
         found_ci_types[$type]=1
       fi
     done
