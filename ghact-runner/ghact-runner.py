@@ -1021,11 +1021,6 @@ def send_completion_notification(
     details.append(f"*Successes:* {len(result.successes)}")
     details.append(f"*Failures:* {len(result.failures)}")
 
-    if result.failures:
-        details.append("\n*Failed repos:*")
-        for url, rc in result.failures:
-            details.append(f"• `{url}` — exit {rc}")
-
     if files_to_attach:
         details.append("\nComplete logs attached as ZIP.")
         details.append("Success/failure lists attached as text files.")
