@@ -109,6 +109,7 @@ class ExecutionResult:
     """Results from processing all repositories."""
     successes: List[str]
     failures: List[Tuple[str, int]]
+    successes_with_warnings: List[Tuple[str, str]]
     start_time: datetime
     end_time: datetime
 
@@ -967,9 +968,10 @@ def send_completion_notification(
         except Exception as e:
             print(f"WARNING: Could not create logs ZIP: {e}", file=sys.stderr)
 
-    # Create success/failure list files
+    # Create success/failure/warning list files
     success_file = None
     failure_file = None
+    warning_file = None
     try:
         # Success list
         sf = tempfile.NamedTemporaryFile(
@@ -997,14 +999,29 @@ def send_completion_notification(
             ff.write(f"{url}\t{rc}\n")
         ff.close()
 
-        # Attach both lists
+        # Warning list
+        wf = tempfile.NamedTemporaryFile(
+            prefix="ghact-warnings-",
+            suffix=".txt",
+            delete=False,
+            mode="w",
+            encoding="utf-8"
+        )
+        warning_file = wf.name
+        for url, warning_msg in result.successes_with_warnings:
+            wf.write(f"{url}\t{warning_msg}\n")
+        wf.close()
+
+        # Attach all lists
         if success_file:
             files_to_attach.append(success_file)
         if failure_file:
             files_to_attach.append(failure_file)
+        if warning_file:
+            files_to_attach.append(warning_file)
 
     except Exception as e:
-        print(f"WARNING: Could not create success/failure lists: {e}", file=sys.stderr)
+        print(f"WARNING: Could not create success/failure/warning lists: {e}", file=sys.stderr)
 
     # Build notification message
     status = "success" if not result.failures else "failure"
@@ -1019,11 +1036,12 @@ def send_completion_notification(
     details.append(f"*Time:* {time_str}")
     details.append(f"*Duration:* {duration_str}")
     details.append(f"*Successes:* {len(result.successes)}")
+    details.append(f"*Successes with warnings:* {len(result.successes_with_warnings)}")
     details.append(f"*Failures:* {len(result.failures)}")
 
     if files_to_attach:
         details.append("\nComplete logs attached as ZIP.")
-        details.append("Success/failure lists attached as text files.")
+        details.append("Success/failure/warning lists attached as text files.")
 
     message = "\n".join(details)
 
@@ -1039,6 +1057,7 @@ def send_completion_notification(
             template_vars={
                 "TIME": datetime.now().isoformat(),
                 "SUCCESS_COUNT": str(len(result.successes)),
+                "WARNING_COUNT": str(len(result.successes_with_warnings)),
                 "FAILURE_COUNT": str(len(result.failures))
             }
         )
@@ -1050,6 +1069,8 @@ def send_completion_notification(
             cleanup_temp_file(success_file)
         if failure_file:
             cleanup_temp_file(failure_file)
+        if warning_file:
+            cleanup_temp_file(warning_file)
 
 
 # ============================================================================
@@ -1119,7 +1140,7 @@ def process_repository(
     act: str,
     logs_root: Path,
     dry_run: bool
-) -> Tuple[bool, int]:
+) -> Tuple[bool, int, Optional[str]]:
     """
     Process a single repository: clone/update, inject workflow, run act.
 
@@ -1132,7 +1153,8 @@ def process_repository(
         dry_run: Dry-run mode flag
 
     Returns:
-        Tuple of (success: bool, exit_code: int)
+        Tuple of (success: bool, exit_code: int, warning_message: Optional[str])
+        warning_message is set when repo succeeds with warnings (e.g., missing Dockerfile)
     """
     # Setup paths and logger
     dirname = spec.name or repo_dir_name_from(spec.url)
@@ -1177,14 +1199,21 @@ def process_repository(
 
         if rc == 0:
             logger.log(f"✅ act run succeeded for {spec.url}")
-            return True, rc
+            return True, rc, None
         else:
-            logger.log(f"❌ act run FAILED (exit {rc}) for {spec.url}")
-            return False, rc
+            # Check if failure is due to missing Dockerfile
+            dockerfile_path = repo_path / "Dockerfile"
+            if not dockerfile_path.exists():
+                warning_msg = "No Dockerfile found in repository"
+                logger.log(f"⚠️  act run failed but {warning_msg} - treating as success")
+                return True, 0, warning_msg
+            else:
+                logger.log(f"❌ act run FAILED (exit {rc}) for {spec.url}")
+                return False, rc, None
 
     except Exception as e:
         logger.log(f"❌ ERROR for {spec.url}: {e}")
-        return False, -1
+        return False, -1, None
     finally:
         logger.close()
 
@@ -1206,6 +1235,9 @@ def print_summary(result: ExecutionResult) -> None:
     print(f"  Successes: {len(result.successes)}")
     for url in result.successes:
         print(f"    - {url}")
+    print(f"  Successes with warnings: {len(result.successes_with_warnings)}")
+    for url, warning in result.successes_with_warnings:
+        print(f"    - {url} (⚠️  {warning})")
     print(f"  Failures: {len(result.failures)}")
     for url, rc in result.failures:
         print(f"    - {url} (exit {rc})")
@@ -1263,6 +1295,7 @@ def main() -> None:
     # Initialize results tracking
     successes: List[str] = []
     failures: List[Tuple[str, int]] = []
+    successes_with_warnings: List[Tuple[str, str]] = []
 
     # Setup logs
     logs_root = Path("logs").resolve()
@@ -1278,12 +1311,15 @@ def main() -> None:
 
     # Process each repository
     for spec in cfg.repos:
-        success, rc = process_repository(
+        success, rc, warning_msg = process_repository(
             spec, cfg, gh, act, logs_root, args.dry_run
         )
 
         if success:
-            successes.append(spec.url)
+            if warning_msg:
+                successes_with_warnings.append((spec.url, warning_msg))
+            else:
+                successes.append(spec.url)
         else:
             failures.append((spec.url, rc))
             if not cfg.continue_on_error:
@@ -1294,6 +1330,7 @@ def main() -> None:
     result = ExecutionResult(
         successes=successes,
         failures=failures,
+        successes_with_warnings=successes_with_warnings,
         start_time=start_time,
         end_time=end_time
     )
