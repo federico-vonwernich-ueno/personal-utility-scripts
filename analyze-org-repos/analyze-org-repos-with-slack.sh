@@ -668,6 +668,9 @@ for REPO in $REPOS; do
   fi
 
   # List workflow files in .github/workflows
+  echo "  🔍 Buscando workflows en .github/workflows..."
+  echo "     API endpoint: repos/$ORG/$REPO/contents/.github/workflows?ref=$DEFAULT_BRANCH"
+
   FILES_RESPONSE=$(safe_gh_api repos/$ORG/$REPO/contents/.github/workflows?ref=$DEFAULT_BRANCH 2>&1)
   exit_code=$?
 
@@ -678,12 +681,52 @@ for REPO in $REPOS; do
     exit 3
   fi
 
+  # Debug: Show API response details
+  if (( exit_code != 0 )); then
+    echo "     ⚠️  API call failed with exit code: $exit_code"
+    echo "     Response preview (first 3 lines):"
+    echo "$FILES_RESPONSE" | head -3 | sed 's/^/       /'
+  fi
+
   # Check if directory exists (404 means no .github/workflows directory)
-  if echo "$FILES_RESPONSE" | grep -q "Not Found"; then
+  if echo "$FILES_RESPONSE" | grep -qi "Not Found"; then
+    echo "     ❌ Directorio .github/workflows no encontrado (404 Not Found)"
+    FILES=""
+  elif echo "$FILES_RESPONSE" | grep -qi "This repository is empty"; then
+    echo "     ℹ️  Repositorio vacío"
+    FILES=""
+  elif echo "$FILES_RESPONSE" | grep -qi "permission\|forbidden\|401\|403"; then
+    echo "     ⚠️  Error de permisos al acceder a .github/workflows"
+    echo "     Response preview:"
+    echo "$FILES_RESPONSE" | head -5 | sed 's/^/       /'
+    FILES=""
+  elif (( exit_code != 0 )); then
+    echo "     ⚠️  Error desconocido al obtener workflows"
+    echo "     Full response:"
+    echo "$FILES_RESPONSE" | sed 's/^/       /'
     FILES=""
   else
-    # Extract only .yml files
-    FILES=$(echo "$FILES_RESPONSE" | jq -r '.[] | select(.name | endswith(".yml")) | .name' 2>/dev/null || echo "")
+    # Extract both .yml and .yaml files
+    ALL_FILES=$(echo "$FILES_RESPONSE" | jq -r '.[].name' 2>/dev/null || echo "")
+    FILES=$(echo "$FILES_RESPONSE" | jq -r '.[] | select(.name | endswith(".yml") or endswith(".yaml")) | .name' 2>/dev/null || echo "")
+
+    # Show what we found
+    if [[ -n "$ALL_FILES" ]]; then
+      TOTAL_FILES=$(echo "$ALL_FILES" | grep -c '^' || echo "0")
+      WORKFLOW_FILES=$(echo "$FILES" | grep -c '^' 2>/dev/null || echo "0")
+      echo "     ✓ Directorio encontrado: $TOTAL_FILES archivo(s) total, $WORKFLOW_FILES workflow(s) (.yml/.yaml)"
+
+      if [[ $WORKFLOW_FILES -eq 0 ]] && [[ $TOTAL_FILES -gt 0 ]]; then
+        echo "     ℹ️  Archivos en el directorio (no son workflows .yml/.yaml):"
+        echo "$ALL_FILES" | head -5 | sed 's/^/       - /'
+        if [[ $TOTAL_FILES -gt 5 ]]; then
+          echo "       ... y $((TOTAL_FILES - 5)) más"
+        fi
+      fi
+    else
+      echo "     ℹ️  Directorio .github/workflows existe pero está vacío"
+      FILES=""
+    fi
   fi
 
   # Initialize CI detection flags
@@ -799,7 +842,9 @@ for REPO in $REPOS; do
       fi
     done <<< "$FILES"
   else
-    echo "No se encontraron workflows en .github/workflows para $REPO."
+    echo ""
+    echo "  ⚠️  No se encontraron workflows .yml/.yaml utilizables"
+    echo "     (Ver mensajes anteriores para más detalles)"
   fi
 
   # Save repositories without unified CI
