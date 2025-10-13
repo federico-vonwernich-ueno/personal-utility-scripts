@@ -110,6 +110,7 @@ class ExecutionResult:
     successes: List[str]
     failures: List[Tuple[str, int]]
     successes_with_warnings: List[Tuple[str, str]]
+    dependency_failures: List[Tuple[str, str]]
     start_time: datetime
     end_time: datetime
 
@@ -968,10 +969,11 @@ def send_completion_notification(
         except Exception as e:
             print(f"WARNING: Could not create logs ZIP: {e}", file=sys.stderr)
 
-    # Create success/failure/warning list files
+    # Create success/failure/warning/dependency list files
     success_file = None
     failure_file = None
     warning_file = None
+    dependency_file = None
     try:
         # Success list
         sf = tempfile.NamedTemporaryFile(
@@ -1012,6 +1014,19 @@ def send_completion_notification(
             wf.write(f"{url}\t{warning_msg}\n")
         wf.close()
 
+        # Dependency failure list
+        df = tempfile.NamedTemporaryFile(
+            prefix="ghact-dependency-failures-",
+            suffix=".txt",
+            delete=False,
+            mode="w",
+            encoding="utf-8"
+        )
+        dependency_file = df.name
+        for url, error_desc in result.dependency_failures:
+            df.write(f"{url}\t{error_desc}\n")
+        df.close()
+
         # Attach all lists
         if success_file:
             files_to_attach.append(success_file)
@@ -1019,29 +1034,33 @@ def send_completion_notification(
             files_to_attach.append(failure_file)
         if warning_file:
             files_to_attach.append(warning_file)
+        if dependency_file:
+            files_to_attach.append(dependency_file)
 
     except Exception as e:
-        print(f"WARNING: Could not create success/failure/warning lists: {e}", file=sys.stderr)
+        print(f"WARNING: Could not create success/failure/warning/dependency lists: {e}", file=sys.stderr)
 
     # Build notification message
-    status = "success" if not result.failures else "failure"
+    has_failures = result.failures or result.dependency_failures
+    status = "success" if not has_failures else "failure"
     title = f"ghact-runner.py: Result ({'OK' if status == 'success' else 'FAIL'})"
 
     duration_str = format_duration(result.duration)
     time_str = result.end_time.strftime("%Y-%m-%d %H:%M:%S")
 
     details = []
-    emoji = ":white_check_mark:" if not result.failures else ":x:"
+    emoji = ":white_check_mark:" if not has_failures else ":x:"
     details.append(f"*Execution finished* {emoji}")
     details.append(f"*Time:* {time_str}")
     details.append(f"*Duration:* {duration_str}")
     details.append(f"*Successes:* {len(result.successes)}")
     details.append(f"*Successes with warnings:* {len(result.successes_with_warnings)}")
+    details.append(f"*Dependency failures:* {len(result.dependency_failures)}")
     details.append(f"*Failures:* {len(result.failures)}")
 
     if files_to_attach:
         details.append("\nComplete logs attached as ZIP.")
-        details.append("Success/failure/warning lists attached as text files.")
+        details.append("Success/failure/warning/dependency lists attached as text files.")
 
     message = "\n".join(details)
 
@@ -1058,6 +1077,7 @@ def send_completion_notification(
                 "TIME": datetime.now().isoformat(),
                 "SUCCESS_COUNT": str(len(result.successes)),
                 "WARNING_COUNT": str(len(result.successes_with_warnings)),
+                "DEPENDENCY_FAILURE_COUNT": str(len(result.dependency_failures)),
                 "FAILURE_COUNT": str(len(result.failures))
             }
         )
@@ -1071,6 +1091,8 @@ def send_completion_notification(
             cleanup_temp_file(failure_file)
         if warning_file:
             cleanup_temp_file(warning_file)
+        if dependency_file:
+            cleanup_temp_file(dependency_file)
 
 
 # ============================================================================
@@ -1133,6 +1155,44 @@ def initialize_logs_directory(logs_root: Path) -> None:
 # REPOSITORY PROCESSING
 # ============================================================================
 
+def detect_dependency_error(log_path: Path) -> Optional[str]:
+    """
+    Detect if log contains dependency resolution errors.
+
+    Searches for common dependency error patterns across multiple build systems
+    (Maven, Gradle, npm, Python).
+
+    Args:
+        log_path: Path to log file to analyze
+
+    Returns:
+        Error description if dependency error found, None otherwise
+    """
+    error_patterns = {
+        "Non-resolvable parent POM": "Maven parent POM resolution failed",
+        "Could not resolve dependencies": "Maven dependency resolution failed",
+        "Could not transfer artifact": "Maven artifact transfer failed",
+        "Failed to collect dependencies": "Maven dependency collection failed",
+        "Blocked mirror for repositories": "Maven repository mirror blocked",
+        "Dependency resolution failed": "Dependency resolution failed",
+        "Could not resolve": "Dependency resolution failed",
+        "Could not download": "Dependency download failed",
+        "npm ERR!": "npm dependency error",
+        "ERESOLVE": "npm dependency resolution conflict",
+        "Could not find a version": "Python package version not found",
+        "No matching distribution": "Python package distribution not found",
+    }
+
+    try:
+        content = log_path.read_text(encoding="utf-8")
+        for pattern, description in error_patterns.items():
+            if pattern in content:
+                return description
+        return None
+    except Exception:
+        return None
+
+
 def process_repository(
     spec: RepoSpec,
     cfg: Config,
@@ -1140,7 +1200,7 @@ def process_repository(
     act: str,
     logs_root: Path,
     dry_run: bool
-) -> Tuple[bool, int, Optional[str]]:
+) -> Tuple[bool, int, Optional[str], Optional[str]]:
     """
     Process a single repository: clone/update, inject workflow, run act.
 
@@ -1153,8 +1213,10 @@ def process_repository(
         dry_run: Dry-run mode flag
 
     Returns:
-        Tuple of (success: bool, exit_code: int, warning_message: Optional[str])
-        warning_message is set when repo succeeds with warnings (e.g., missing Dockerfile)
+        Tuple of (success: bool, exit_code: int, warning_msg: Optional[str],
+                  dependency_error_msg: Optional[str])
+        - warning_msg is set when repo succeeds with warnings (e.g., missing Dockerfile)
+        - dependency_error_msg is set when repo fails due to dependency resolution errors
     """
     # Setup paths and logger
     dirname = spec.name or repo_dir_name_from(spec.url)
@@ -1199,21 +1261,28 @@ def process_repository(
 
         if rc == 0:
             logger.log(f"✅ act run succeeded for {spec.url}")
-            return True, rc, None
+            return True, rc, None, None
         else:
-            # Check if failure is due to missing Dockerfile
+            # First check if Dockerfile is missing (quick check)
             dockerfile_path = repo_path / "Dockerfile"
             if not dockerfile_path.exists():
                 warning_msg = "No Dockerfile found in repository"
                 logger.log(f"⚠️  act run failed but {warning_msg} - treating as success")
-                return True, 0, warning_msg
-            else:
-                logger.log(f"❌ act run FAILED (exit {rc}) for {spec.url}")
-                return False, rc, None
+                return True, 0, warning_msg, None
+
+            # Dockerfile exists, check if failure was due to dependency issues
+            dep_error = detect_dependency_error(log_path)
+            if dep_error:
+                logger.log(f"⚠️  act run failed due to dependency error: {dep_error}")
+                return False, rc, None, dep_error
+
+            # Generic failure
+            logger.log(f"❌ act run FAILED (exit {rc}) for {spec.url}")
+            return False, rc, None, None
 
     except Exception as e:
         logger.log(f"❌ ERROR for {spec.url}: {e}")
-        return False, -1, None
+        return False, -1, None, None
     finally:
         logger.close()
 
@@ -1238,6 +1307,9 @@ def print_summary(result: ExecutionResult) -> None:
     print(f"  Successes with warnings: {len(result.successes_with_warnings)}")
     for url, warning in result.successes_with_warnings:
         print(f"    - {url} (⚠️  {warning})")
+    print(f"  Dependency failures: {len(result.dependency_failures)}")
+    for url, error_desc in result.dependency_failures:
+        print(f"    - {url} (🔗 {error_desc})")
     print(f"  Failures: {len(result.failures)}")
     for url, rc in result.failures:
         print(f"    - {url} (exit {rc})")
@@ -1296,6 +1368,7 @@ def main() -> None:
     successes: List[str] = []
     failures: List[Tuple[str, int]] = []
     successes_with_warnings: List[Tuple[str, str]] = []
+    dependency_failures: List[Tuple[str, str]] = []
 
     # Setup logs
     logs_root = Path("logs").resolve()
@@ -1311,7 +1384,7 @@ def main() -> None:
 
     # Process each repository
     for spec in cfg.repos:
-        success, rc, warning_msg = process_repository(
+        success, rc, warning_msg, dep_error_msg = process_repository(
             spec, cfg, gh, act, logs_root, args.dry_run
         )
 
@@ -1321,7 +1394,10 @@ def main() -> None:
             else:
                 successes.append(spec.url)
         else:
-            failures.append((spec.url, rc))
+            if dep_error_msg:
+                dependency_failures.append((spec.url, dep_error_msg))
+            else:
+                failures.append((spec.url, rc))
             if not cfg.continue_on_error:
                 break
 
@@ -1331,6 +1407,7 @@ def main() -> None:
         successes=successes,
         failures=failures,
         successes_with_warnings=successes_with_warnings,
+        dependency_failures=dependency_failures,
         start_time=start_time,
         end_time=end_time
     )
@@ -1347,7 +1424,8 @@ def main() -> None:
         print(f"[SLACK] Failed to send completion notification: {e}")
 
     # Exit with appropriate code
-    sys.exit(ExitCode.SUCCESS if not failures else ExitCode.FAILURE)
+    has_failures = failures or dependency_failures
+    sys.exit(ExitCode.SUCCESS if not has_failures else ExitCode.FAILURE)
 
 
 if __name__ == "__main__":
