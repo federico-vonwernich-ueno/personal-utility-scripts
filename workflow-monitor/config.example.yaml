@@ -1,0 +1,104 @@
+# Workflow Monitor Configuration Example
+
+# Global Settings
+# ---------------
+
+# How often to check for new workflow runs (seconds)
+# Only used in continuous monitoring mode
+poll_interval: 60
+
+# How far back to look for workflow runs (minutes)
+# Runs older than this will be ignored
+lookback_minutes: 60
+
+# Maximum number of workflow runs to fetch per repository per check
+# Increase if you have high-frequency workflows
+max_runs_per_check: 100
+
+
+# Repositories to Monitor
+# -----------------------
+
+repositories:
+  # Example 1: Monitor ALL workflows on ALL branches
+  # This will check every workflow run in the repository
+  - repository: "owner/repo-name"
+
+  # Example 2: Monitor a specific workflow on ALL branches
+  # Only checks runs for the specified workflow across all branches
+  - repository: "owner/another-repo"
+    workflow: "ci.yml"
+
+  # Example 3: Monitor specific workflow on specific branch
+  # Most targeted monitoring - only checks this workflow on this branch
+  - repository: "owner/production-repo"
+    workflow: "deploy.yml"
+    branch: "main"
+  
+  # Example 3b: Monitor ALL workflows on a specific branch
+  # Checks all workflows but only on the specified branch
+  - repository: "owner/critical-repo"
+    branch: "production"
+
+  # Example 4: Using HTTPS URL format
+  - repository: "https://github.com/myorg/myrepo"
+    workflow: "integration-tests.yml"
+    branch: "develop"
+
+  # Example 5: Using HTTPS URL with .git extension
+  - repository: "https://github.com/myorg/another-repo.git"
+    workflow: "build.yml"
+
+  # Example 6: Using SSH URL format
+  - repository: "git@github.com:myorg/api.git"
+    workflow: "test.yml"
+    branch: "staging"
+
+  # Example 7: Monitor multiple branches of same repo
+  # Add separate entries for each branch you want to monitor
+  - repository: "myorg/critical-service"
+    workflow: "ci.yml"
+    branch: "main"
+  
+  - repository: "myorg/critical-service"
+    workflow: "ci.yml"
+    branch: "develop"
+
+  # Example 8: Monitor different workflows in same repo
+  - repository: "myorg/platform"
+    workflow: "backend-tests.yml"
+  
+  - repository: "myorg/platform"
+    workflow: "frontend-tests.yml"
+  
+  - repository: "myorg/platform"
+    workflow: "e2e-tests.yml"
+
+  # Example 9: Flexible filtering combinations
+  # Monitor ALL workflows across ALL branches
+  - repository: "myorg/experimental"
+  
+  # Monitor specific workflow across ALL branches
+  - repository: "myorg/microservice"
+    workflow: "build.yml"
+  
+  # Monitor ALL workflows on specific branch only
+  - repository: "myorg/legacy-app"
+    branch: "stable"
+
+
+# Notes:
+# ------
+# - The 'repository' field is REQUIRED for each entry
+# - The 'workflow' field is OPTIONAL - omit to monitor ALL workflows
+# - The 'branch' field is OPTIONAL - omit to monitor ALL branches
+# - You can combine these filters as needed:
+#   * No filters = monitor everything in the repo
+#   * workflow only = monitor that workflow across all branches
+#   * branch only = monitor all workflows on that branch
+#   * both = monitor specific workflow on specific branch
+# - You can use any of these formats for repository:
+#   * owner/repo
+#   * https://github.com/owner/repo
+#   * https://github.com/owner/repo.git
+#   * git@github.com:owner/repo.git
