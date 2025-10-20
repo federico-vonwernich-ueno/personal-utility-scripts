@@ -51,6 +51,9 @@ GRADLE_WITHOUT_CI_FILE="gradle-repos-without-ci.yml"
 NODE_WITHOUT_CI_FILE="node-repos-without-ci.yml"
 GO_WITHOUT_CI_FILE="go-repos-without-ci.yml"
 
+# Output file - repositories that failed analysis
+FAILED_REPOS_FILE="failed-repos.txt"
+
 # Project type counters
 maven_repos=0
 gradle_repos=0
@@ -63,6 +66,10 @@ maven_ci_repos=0
 gradle_ci_repos=0
 node_ci_repos=0
 go_ci_repos=0
+
+# Failure tracking
+failed_repos=0
+typeset -A FAILED_REPOS  # Associative array: repo_name -> error_message
 
 # Rate limit tracking variables
 last_rate_limit_check=0
@@ -233,6 +240,23 @@ safe_gh_api() {
       continue
     fi
 
+    # Check if it's a network error (timeout, TLS, connection issues)
+    if echo "$output" | grep -qi "timeout\|TLS handshake\|connection refused\|connection reset\|network is unreachable\|temporary failure in name resolution\|error connecting to"; then
+      retry=$((retry + 1))
+      if (( retry >= max_retries )); then
+        echo "❌ Network error after $max_retries attempts: $output" >&2
+        echo "$output"
+        return 1
+      fi
+
+      # Exponential backoff for network errors: 2s, 4s, 8s
+      local wait_time=$((2 ** retry))
+      echo "⏳ Network error detected (attempt $retry/$max_retries). Retrying in ${wait_time}s..." >&2
+      echo "   Error: $(echo "$output" | head -1)" >&2
+      sleep "$wait_time"
+      continue
+    fi
+
     # Other error - return it
     echo "$output"
     return $result
@@ -240,6 +264,52 @@ safe_gh_api() {
 
   # Max retries exceeded
   echo "❌ Max retries exceeded for gh api call" >&2
+  return 1
+}
+
+# Make a safe GitHub repo view call with retry logic
+# Args: passes all arguments to 'gh repo view' command
+# Returns: command output via stdout, exit code 0 on success, 1 on failure after retries
+safe_gh_repo_view() {
+  local max_retries=3
+  local retry=0
+
+  while (( retry < max_retries )); do
+    # Make the command call
+    local output
+    output=$(gh repo view "$@" 2>&1)
+    local result=$?
+
+    # Success
+    if (( result == 0 )); then
+      echo "$output"
+      return 0
+    fi
+
+    # Check if it's a network error
+    if echo "$output" | grep -qi "timeout\|TLS handshake\|connection refused\|connection reset\|network is unreachable\|temporary failure in name resolution\|error connecting to"; then
+      retry=$((retry + 1))
+      if (( retry >= max_retries )); then
+        echo "❌ Network error after $max_retries attempts: $output" >&2
+        echo "$output"
+        return 1
+      fi
+
+      # Exponential backoff for network errors: 2s, 4s, 8s
+      local wait_time=$((2 ** retry))
+      echo "⏳ Network error in gh repo view (attempt $retry/$max_retries). Retrying in ${wait_time}s..." >&2
+      echo "   Error: $(echo "$output" | head -1)" >&2
+      sleep "$wait_time"
+      continue
+    fi
+
+    # Other error - return it
+    echo "$output"
+    return $result
+  done
+
+  # Max retries exceeded
+  echo "❌ Max retries exceeded for gh repo view" >&2
   return 1
 }
 
@@ -263,9 +333,24 @@ MAVEN_CI_REPOS=$maven_ci_repos
 GRADLE_CI_REPOS=$gradle_ci_repos
 NODE_CI_REPOS=$node_ci_repos
 GO_CI_REPOS=$go_ci_repos
+FAILED_REPOS_COUNT=$failed_repos
 TOTAL_REPOS=$total_repos
 TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
 EOF
+
+  # Save failed repos associative array
+  if (( failed_repos > 0 )); then
+    echo "" >> "$CHECKPOINT_FILE"
+    echo "# Failed repositories" >> "$CHECKPOINT_FILE"
+    echo "typeset -A FAILED_REPOS" >> "$CHECKPOINT_FILE"
+    for repo in "${(@k)FAILED_REPOS}"; do
+      local error_msg="${FAILED_REPOS[$repo]}"
+      # Escape quotes in error message
+      error_msg="${error_msg//\"/\\\"}"
+      echo "FAILED_REPOS[\"$repo\"]=\"$error_msg\"" >> "$CHECKPOINT_FILE"
+    done
+  fi
+
   echo "💾 Progress saved to checkpoint file: $CHECKPOINT_FILE"
 }
 
@@ -275,9 +360,18 @@ load_checkpoint() {
   if [[ -f "$CHECKPOINT_FILE" ]]; then
     echo "📂 Found checkpoint file. Loading previous progress..."
     source "$CHECKPOINT_FILE"
+
+    # Restore failed_repos counter from checkpoint
+    if [[ -n "${FAILED_REPOS_COUNT:-}" ]]; then
+      failed_repos=$FAILED_REPOS_COUNT
+    fi
+
     echo "   Last processed: $LAST_PROCESSED_REPO"
     echo "   Timestamp: $TIMESTAMP"
     echo "   Total repos processed: $TOTAL_REPOS"
+    if (( failed_repos > 0 )); then
+      echo "   Failed repos: $failed_repos"
+    fi
     return 0
   fi
   return 1
@@ -612,7 +706,22 @@ for REPO in $REPOS; do
   echo "Procesando repositorio $COUNTER/$total_repos: $REPO"
   echo "URL: $REPO_URL"
   COUNTER=$((COUNTER + 1))
-  DEFAULT_BRANCH=$(gh repo view "$ORG/$REPO" --json defaultBranchRef -q .defaultBranchRef.name)
+
+  # Try to get default branch with retry logic
+  DEFAULT_BRANCH_OUTPUT=$(safe_gh_repo_view "$ORG/$REPO" --json defaultBranchRef -q .defaultBranchRef.name 2>&1)
+  branch_exit_code=$?
+
+  if (( branch_exit_code != 0 )); then
+    echo "❌ Failed to get default branch for $REPO after retries"
+    echo "   Error: $(echo "$DEFAULT_BRANCH_OUTPUT" | head -1)"
+    failed_repos=$((failed_repos + 1))
+    FAILED_REPOS[$REPO]="Failed to get default branch: $(echo "$DEFAULT_BRANCH_OUTPUT" | head -1 | tr '\n' ' ')"
+    save_checkpoint "$REPO"
+    echo ""
+    continue
+  fi
+
+  DEFAULT_BRANCH="$DEFAULT_BRANCH_OUTPUT"
   echo "Branch por defecto: $DEFAULT_BRANCH"
 
   # Detect project type
@@ -679,6 +788,18 @@ for REPO in $REPOS; do
     save_checkpoint "$REPO"
     echo "⚠️  Rate limit reached. Progress saved. Exiting..."
     exit 3
+  fi
+
+  # Check if it's a network error after retries (fatal error)
+  if (( exit_code == 1 )) && echo "$FILES_RESPONSE" | grep -qi "Network error after\|Max retries exceeded"; then
+    echo "     ❌ Network error after retries - marking repository as failed"
+    echo "     Response preview (first 2 lines):"
+    echo "$FILES_RESPONSE" | head -2 | sed 's/^/       /'
+    failed_repos=$((failed_repos + 1))
+    FAILED_REPOS[$REPO]="Failed to fetch workflows: $(echo "$FILES_RESPONSE" | grep -i 'error' | head -1 | tr '\n' ' ')"
+    save_checkpoint "$REPO"
+    echo ""
+    continue
   fi
 
   # Debug: Show API response details
@@ -889,6 +1010,29 @@ done
 # Clear checkpoint on successful completion
 clear_checkpoint
 
+# Generate failed repositories report
+if (( failed_repos > 0 )); then
+  echo "\n==============================="
+  echo "Generando reporte de repositorios fallidos..."
+  echo "==============================="
+
+  : > "$FAILED_REPOS_FILE"  # Clear/create file
+  echo "# Repositorios que fallaron durante el análisis" >> "$FAILED_REPOS_FILE"
+  echo "# Fecha: $(date '+%Y-%m-%d %H:%M:%S')" >> "$FAILED_REPOS_FILE"
+  echo "# Total: $failed_repos repositorios" >> "$FAILED_REPOS_FILE"
+  echo "" >> "$FAILED_REPOS_FILE"
+  echo "REPOSITORIO | ERROR" >> "$FAILED_REPOS_FILE"
+  echo "------------|------" >> "$FAILED_REPOS_FILE"
+
+  for repo in "${(@k)FAILED_REPOS}"; do
+    local error_msg="${FAILED_REPOS[$repo]}"
+    echo "$repo | $error_msg" >> "$FAILED_REPOS_FILE"
+  done
+
+  echo "✅ Reporte de repositorios fallidos guardado en: $FAILED_REPOS_FILE"
+  echo "   Total de repositorios fallidos: $failed_repos"
+fi
+
 # Calculate execution time
 END_TIME=$(date +%s)
 END_TIME_FORMATTED=$(date '+%Y-%m-%d %H:%M:%S')
@@ -905,9 +1049,16 @@ echo "==============================="
 echo "\n==============================="
 echo "Resumen de Métricas"
 echo "==============================="
-echo "Total de repositorios analizados: $total_repos"
+echo "Total de repositorios procesados: $total_repos"
 if [[ $REPO_LIMIT -gt 0 ]]; then
   echo "(⚠ Análisis limitado a $REPO_LIMIT repositorios)"
+fi
+if (( failed_repos > 0 )); then
+  echo ""
+  echo "⚠️  Repositorios que fallaron al analizar: $failed_repos"
+  echo "    (Ver $FAILED_REPOS_FILE para detalles)"
+  successful_repos=$((total_repos - failed_repos))
+  echo "✅ Repositorios analizados exitosamente: $successful_repos"
 fi
 echo "-------------------------------"
 echo "Repositorios con CI unificado:"
@@ -922,10 +1073,18 @@ echo "  - Gradle: $gradle_repos (sin CI: $((gradle_repos - gradle_ci_repos)))"
 echo "  - Node.js: $node_repos (sin CI: $((node_repos - node_ci_repos)))"
 echo "  - Go: $go_repos (sin CI: $((go_repos - go_ci_repos)))"
 echo "  - Otros: $other_repos"
+if (( failed_repos > 0 )); then
+  echo ""
+  echo "ℹ️  Nota: Los contadores anteriores no incluyen los $failed_repos repositorios"
+  echo "   que fallaron durante el análisis (por errores de red u otros problemas)."
+fi
 echo "-------------------------------"
 echo "Archivos generados:"
 echo "  Con CI unificado: *-repos.yml"
 echo "  Sin CI unificado: *-repos-without-ci.yml"
+if (( failed_repos > 0 )); then
+  echo "  Repositorios fallidos: $FAILED_REPOS_FILE"
+fi
 echo "==============================="
 
 # Prepare Slack summary message
@@ -933,7 +1092,7 @@ TOTAL_WITH_CI=$((maven_ci_repos + gradle_ci_repos + node_ci_repos + go_ci_repos)
 TOTAL_WITHOUT_CI=$((maven_repos - maven_ci_repos + gradle_repos - gradle_ci_repos + node_repos - node_ci_repos + go_repos - go_ci_repos))
 
 SLACK_MESSAGE=$(cat <<EOF
-*Repositorios analizados:* $total_repos
+*Repositorios procesados:* $total_repos
 *Con CI unificado:* $TOTAL_WITH_CI
 *Sin CI unificado:* $TOTAL_WITHOUT_CI
 
@@ -948,21 +1107,39 @@ SLACK_MESSAGE=$(cat <<EOF
 EOF
 )
 
+# Add failure information if applicable
+if (( failed_repos > 0 )); then
+  SLACK_MESSAGE+=$'\n\n⚠️ *Repositorios que fallaron:* '$failed_repos
+  SLACK_MESSAGE+=$'\n_Ver archivo adjunto '$FAILED_REPOS_FILE$' para detalles_'
+fi
+
 # Add limit warning if applicable
 if [[ $REPO_LIMIT -gt 0 ]]; then
-  SLACK_MESSAGE+=$'\n⚠️ _Análisis limitado a '$REPO_LIMIT$' repositorios (modo prueba)_'
+  SLACK_MESSAGE+=$'\n\n⚠️ _Análisis limitado a '$REPO_LIMIT$' repositorios (modo prueba)_'
 fi
 
 # Build list of files to attach
 ATTACH_FILES="$MAVEN_OUTPUT_FILE $GRADLE_OUTPUT_FILE $NODE_OUTPUT_FILE $GO_OUTPUT_FILE $MAVEN_WITHOUT_CI_FILE $GRADLE_WITHOUT_CI_FILE $NODE_WITHOUT_CI_FILE $GO_WITHOUT_CI_FILE"
 ATTACH_FILES="$ATTACH_FILES $LOG_FILE"
 
+# Add failed repos file if it exists
+if (( failed_repos > 0 )); then
+  ATTACH_FILES="$ATTACH_FILES $FAILED_REPOS_FILE"
+fi
+
+# Prepare metadata fields for Slack
+SLACK_FIELDS="Total:$total_repos,Con CI:$TOTAL_WITH_CI,Sin CI:$TOTAL_WITHOUT_CI"
+if (( failed_repos > 0 )); then
+  SLACK_FIELDS+=",Fallidos:$failed_repos"
+fi
+SLACK_FIELDS+=",Duración:${DURATION_MIN}m ${DURATION_SEC}s"
+
 # Send completion notification
 if send_slack_notification \
     "✅ Análisis de Repositorios - Completado" \
     "$SLACK_MESSAGE" \
     "SUCCESS" \
-    "Total:$total_repos,Con CI:$TOTAL_WITH_CI,Sin CI:$TOTAL_WITHOUT_CI,Duración:${DURATION_MIN}m ${DURATION_SEC}s" \
+    "$SLACK_FIELDS" \
     "$ATTACH_FILES"; then
   echo "\n✅ Notificación de finalización enviada a Slack"
 else
