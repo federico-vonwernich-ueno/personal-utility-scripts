@@ -1,0 +1,23 @@
+# Repository Sync Configuration
+#
+# This configuration file defines which repositories to sync from a source
+# organization to one or more target organizations.
+
+# Source organization (where repositories will be cloned from)
+source_org: "my-source-org"
+
+# Target organizations (where repositories will be mirrored to)
+# Can be one or more organizations
+target_orgs:
+  - "target-org-1"
+  - "target-org-2"
+  - "target-org-3"
+
+# List of repositories to sync
+# Repository names only (not full URLs)
+repositories:
+  - "repo-name-1"
+  - "repo-name-2"
+  - "repo-name-3"
+  - "my-important-project"
+  - "another-project"

@@ -1,0 +1,71 @@
+# Nullplatform Setup Configuration
+#
+# This configuration file defines the resources to create in nullplatform.
+# Resources are created in order: namespace -> applications -> scopes -> parameters
+
+# Namespace (optional)
+# If not specified, resources will be created in the default or existing namespace
+namespace:
+  name: "my-namespace"
+  # Add other namespace fields as required by nullplatform API
+
+# Applications
+# List of applications to create
+applications:
+  - name: "my-web-app"
+    namespace_id: "ns-xxxxx"  # Required if creating in specific namespace
+    # Add other application fields as required by nullplatform API
+    # Examples might include:
+    # description: "My web application"
+    # type: "web"
+    # runtime: "nodejs"
+
+  - name: "my-api-service"
+    namespace_id: "ns-xxxxx"
+    # description: "My API service"
+
+# Scopes
+# Scopes define environments or deployment targets (e.g., dev, staging, prod)
+scopes:
+  - name: "development"
+    application_id: "app-xxxxx"  # Required: ID of the parent application
+    # Add other scope fields as required by nullplatform API
+    # Examples might include:
+    # type: "development"
+    # dimensions:
+    #   environment: "dev"
+    #   region: "us-east-1"
+
+  - name: "production"
+    application_id: "app-xxxxx"
+    # type: "production"
+
+# Parameters
+# Application or scope-level configuration parameters
+parameters:
+  - name: "DATABASE_URL"
+    application_id: "app-xxxxx"  # Required: ID of the parent application
+    # Optional: Set a value for this parameter
+    value: "postgres://localhost:5432/mydb"
+    # Optional: If you want to set this value at scope level
+    # scope_id: "scope-xxxxx"
+    # Add other parameter fields as required by nullplatform API
+    # Examples might include:
+    # description: "Database connection string"
+    # secret: true  # Mark as secret if sensitive
+    # required: true
+
+  - name: "API_KEY"
+    application_id: "app-xxxxx"
+    value: "sk-xxxxx"
+    # secret: true
+
+  - name: "LOG_LEVEL"
+    application_id: "app-xxxxx"
+    value: "info"
+
+# Notes:
+# 1. Replace placeholder IDs (ns-xxxxx, app-xxxxx, scope-xxxxx) with actual IDs
+# 2. The script will create resources and track their IDs automatically
+# 3. Use --dry-run flag to preview actions before creating resources
+# 4. Check nullplatform API documentation for all available fields
