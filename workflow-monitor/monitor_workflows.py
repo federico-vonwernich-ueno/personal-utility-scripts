@@ -450,11 +450,21 @@ class WorkflowMonitor:
                 # Check if this is a new failure we haven't seen before
                 if run_id not in self.seen_runs[key]:
                     stats['new_failures'] += 1
-                    
+
                     # Analyze and report the failure
                     analysis = self._analyze_failure(repo, run)
                     self._report_failure(repo, analysis)
-                
+
+                    # Send Slack notification for the failure
+                    try:
+                        slack_rc = send_failure_notification(repo, analysis)
+                        if slack_rc == 0:
+                            self._print_debug("[SLACK] Failure notification sent successfully")
+                        elif slack_rc not in (2, 3, 4):  # Ignore missing deps/config errors
+                            self._print_debug(f"[SLACK] Notification failed with code {slack_rc}")
+                    except Exception as e:
+                        self._print_debug(f"[SLACK] Failed to send failure notification: {e}")
+
                 # Mark failed run as seen
                 self.seen_runs[key].add(run_id)
             elif conclusion == 'success':
@@ -518,7 +528,23 @@ class WorkflowMonitor:
             self._print_info(f"State file: {self.state_file}")
         if self.log_file:
             self._print_info(f"Log file: {self.log_file.name}")
-        
+
+        # Send Slack startup notification
+        try:
+            startup_rc = send_startup_notification(self.config)
+            if startup_rc == 0:
+                self._print_info("[SLACK] Startup notification sent successfully")
+            elif startup_rc == 3:
+                self._print_debug("[SLACK] SLACK_BOT_TOKEN not set, skipping notification")
+            elif startup_rc == 4:
+                self._print_debug("[SLACK] SLACK_CHANNEL not set, skipping notification")
+            elif startup_rc == 2:
+                self._print_debug("[SLACK] slack-sdk not installed, skipping notification")
+            else:
+                self._print_warning(f"[SLACK] Startup notification failed with code {startup_rc}")
+        except Exception as e:
+            self._print_warning(f"[SLACK] Failed to send startup notification: {e}")
+
         check_count = 0
         
         try:
@@ -578,6 +604,219 @@ class WorkflowMonitor:
         else:
             self._print_success("No new failures detected")
             return 0
+
+
+# ============================================================================
+# SLACK NOTIFICATIONS
+# ============================================================================
+
+def validate_slack_config() -> Optional[int]:
+    """
+    Validate Slack environment configuration.
+
+    Returns:
+        None if valid, or exit code if invalid/missing config
+    """
+    dry_run_flag = os.environ.get("SLACK_DRY_RUN")
+    token = os.environ.get("SLACK_BOT_TOKEN")
+    channel = os.environ.get("SLACK_CHANNEL")
+
+    if not token and not dry_run_flag:
+        return 3  # SLACK_NO_TOKEN
+
+    if not channel and not dry_run_flag:
+        return 4  # SLACK_NO_CHANNEL
+
+    return None
+
+
+def check_slack_dependencies() -> Optional[int]:
+    """
+    Check if Slack SDK dependencies are available.
+
+    Returns:
+        None if dependencies available, or exit code if missing
+    """
+    try:
+        import importlib
+        importlib.import_module('slack_sdk')
+        importlib.import_module('urllib3')
+        return None
+    except Exception:
+        dry_run_flag = os.environ.get("SLACK_DRY_RUN")
+
+        if dry_run_flag:
+            return None  # Allow dry-run to proceed
+        else:
+            return 2  # MISSING_DEPENDENCY
+
+
+def send_slack_notification(
+    title: str,
+    message: str = "",
+    status: str = "info",
+    template: Optional[str] = None,
+    template_vars: Optional[Dict[str, str]] = None
+) -> int:
+    """
+    Send notification via Slack using companion notifier script.
+
+    Respects SLACK_DRY_RUN, SLACK_BOT_TOKEN, SLACK_CHANNEL env vars.
+
+    Args:
+        title: Notification title
+        message: Message body
+        status: Status type (info, success, failure, warning)
+        template: Template name (optional)
+        template_vars: Template variables (optional)
+
+    Returns:
+        Exit code (0 = success, 3 = no token, 4 = no channel, etc.)
+    """
+    # Locate notifier script
+    script_dir = Path(__file__).parent
+    slack_script = (script_dir.parent / "slack-notifier" / "slack_notifier_sdk.py").resolve()
+
+    # Validate configuration
+    config_error = validate_slack_config()
+    if config_error:
+        return config_error
+
+    if not slack_script.exists():
+        return 2  # MISSING_DEPENDENCY
+
+    # Check dependencies
+    dep_error = check_slack_dependencies()
+    if dep_error:
+        return dep_error
+
+    # Build command
+    dry_run_flag = bool(os.environ.get("SLACK_DRY_RUN"))
+    cmd = [sys.executable, str(slack_script), "--title", title, "--status", status]
+
+    if message:
+        cmd.extend(["--message", message])
+
+    if dry_run_flag:
+        cmd.append("--dry-run")
+
+    if template:
+        cmd.extend(["--template", template])
+
+    if template_vars:
+        for k, v in template_vars.items():
+            if k is not None:
+                cmd.extend(["--var", f"{k}={v}"])
+
+    # Execute
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        return result.returncode
+    except Exception:
+        return 1
+
+
+def send_startup_notification(config: Dict) -> int:
+    """
+    Send initial Slack notification when monitoring starts.
+
+    Args:
+        config: Configuration dictionary
+
+    Returns:
+        Notifier exit code
+    """
+    repositories = config.get('repositories', [])
+    poll_interval = config.get('poll_interval', 60)
+    lookback_minutes = config.get('lookback_minutes', 60)
+    max_runs = config.get('max_runs_per_check', 100)
+
+    title = "Workflow Monitor Starting"
+
+    # Build repository list
+    repo_list = []
+    for repo_config in repositories:
+        repo = repo_config.get('repository', 'Unknown')
+        workflow = repo_config.get('workflow')
+        branch = repo_config.get('branch')
+
+        desc = repo
+        if workflow:
+            desc += f" (workflow: {workflow})"
+        if branch:
+            desc += f" (branch: {branch})"
+        repo_list.append(f"• {desc}")
+
+    repo_list_str = "\n".join(repo_list) if repo_list else "None configured"
+
+    message = (
+        f"*Monitoring {len(repositories)} repositories*\n\n"
+        f"*Configuration:*\n"
+        f"• Poll interval: {poll_interval}s\n"
+        f"• Lookback window: {lookback_minutes} minutes\n"
+        f"• Max runs per check: {max_runs}\n\n"
+        f"*Repositories:*\n{repo_list_str}"
+    )
+
+    return send_slack_notification(
+        title,
+        message,
+        status="info",
+        template="simple",
+        template_vars={
+            "TIME": datetime.now().isoformat(),
+            "REPO_COUNT": str(len(repositories))
+        }
+    )
+
+
+def send_failure_notification(repo: str, analysis: Dict) -> int:
+    """
+    Send Slack notification for a workflow failure.
+
+    Args:
+        repo: Repository in format "owner/repo"
+        analysis: Failure analysis dictionary
+
+    Returns:
+        Notifier exit code
+    """
+    title = f"Workflow Failure: {repo}"
+
+    # Build failed jobs list
+    failed_jobs_list = []
+    for job in analysis.get('failed_jobs', []):
+        job_name = job.get('name', 'Unknown')
+        conclusion = job.get('conclusion', 'unknown')
+        failed_jobs_list.append(f"• {job_name} ({conclusion})")
+
+    failed_jobs_str = "\n".join(failed_jobs_list) if failed_jobs_list else "No job details available"
+
+    message = (
+        f"*Workflow:* {analysis['workflow']}\n"
+        f"*Run ID:* {analysis['run_id']}\n"
+        f"*Title:* {analysis['title']}\n"
+        f"*Branch:* {analysis['branch']}\n"
+        f"*Event:* {analysis['event']}\n"
+        f"*Conclusion:* {analysis['conclusion']}\n"
+        f"*Created:* {analysis['created_at']}\n\n"
+        f"*Failed Jobs:*\n{failed_jobs_str}\n\n"
+        f"*URL:* {analysis['url']}"
+    )
+
+    return send_slack_notification(
+        title,
+        message,
+        status="failure",
+        template="workflow_failure",
+        template_vars={
+            "WORKFLOW": analysis['workflow'],
+            "REPO": repo,
+            "BRANCH": analysis['branch'],
+            "RUN_ID": str(analysis['run_id']),
+            "URL": analysis['url']
+        }
+    )
 
 
 def load_config(config_file: str) -> Dict:
