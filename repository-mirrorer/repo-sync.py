@@ -413,10 +413,6 @@ class RepoSyncer:
                         settings_synced['success'].append('actions_permissions')
                     else:
                         settings_synced['failed'].append('actions_permissions')
-                        self.logger.warning(f"Failed to sync actions_permissions for {org}/{repo_name}")
-                        self.logger.warning(f"  Target: {org}/{repo_name}")
-                        self.logger.warning(f"  Attempted: {self._format_settings_for_log(actions_settings['actions_permissions'])}")
-                        self.logger.warning(f"  See error details in logs above")
 
                     # Sync selected actions (if allowed_actions is 'selected')
                     if 'selected_actions' in actions_settings:
@@ -424,10 +420,6 @@ class RepoSyncer:
                             settings_synced['success'].append('selected_actions')
                         else:
                             settings_synced['failed'].append('selected_actions')
-                            self.logger.warning(f"Failed to sync selected_actions for {org}/{repo_name}")
-                            self.logger.warning(f"  Target: {org}/{repo_name}")
-                            self.logger.warning(f"  Attempted: {self._format_settings_for_log(actions_settings['selected_actions'])}")
-                            self.logger.warning(f"  See error details in logs above")
 
                 # Sync workflow permissions
                 if 'workflow_permissions' in actions_settings:
@@ -435,10 +427,6 @@ class RepoSyncer:
                         settings_synced['success'].append('workflow_permissions')
                     else:
                         settings_synced['failed'].append('workflow_permissions')
-                        self.logger.warning(f"Failed to sync workflow_permissions for {org}/{repo_name}")
-                        self.logger.warning(f"  Target: {org}/{repo_name}")
-                        self.logger.warning(f"  Attempted: {self._format_settings_for_log(actions_settings['workflow_permissions'])}")
-                        self.logger.warning(f"  See error details in logs above")
 
                 # Sync workflow access level (for private repos)
                 if 'workflow_access' in actions_settings:
@@ -446,10 +434,6 @@ class RepoSyncer:
                         settings_synced['success'].append('workflow_access')
                     else:
                         settings_synced['failed'].append('workflow_access')
-                        self.logger.warning(f"Failed to sync workflow_access for {org}/{repo_name}")
-                        self.logger.warning(f"  Target: {org}/{repo_name}")
-                        self.logger.warning(f"  Attempted: {self._format_settings_for_log(actions_settings['workflow_access'])}")
-                        self.logger.warning(f"  See error details in logs above")
 
             # Log summary
             total_success = len(settings_synced['success'])
