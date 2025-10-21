@@ -119,53 +119,32 @@ class RepoSyncer:
         self.logger.info(title)
         self.logger.info(separator)
 
-    def _format_settings_for_log(self, settings: Dict, max_items: int = 5, max_value_len: int = 50) -> str:
+    def _format_settings_for_log(self, settings: Dict, indent: bool = False) -> str:
         """
-        Format settings dictionary for readable log output.
+        Format settings dictionary as JSON for log output.
 
         Args:
             settings: Dictionary of settings to format
-            max_items: Maximum number of items to show (default 5)
-            max_value_len: Maximum length for string values (default 50)
+            indent: If True, use pretty-printed multi-line JSON (default: False for single line)
 
         Returns:
-            Formatted string representation of settings
+            JSON-formatted string representation of settings (no truncation)
         """
         if not settings:
             return "{}"
 
-        items = []
-        for key, value in list(settings.items())[:max_items]:
-            # Format value based on type
-            if isinstance(value, str):
-                # Truncate long strings
-                if len(value) > max_value_len:
-                    formatted_value = f"'{value[:max_value_len]}...'"
-                else:
-                    formatted_value = f"'{value}'"
-            elif isinstance(value, (list, tuple)):
-                # Show list length if long
-                if len(value) > 3:
-                    formatted_value = f"[{', '.join(map(str, value[:3]))}, ...{len(value)-3} more]"
-                else:
-                    formatted_value = str(value)
-            elif isinstance(value, dict):
-                # Show nested dict keys
-                formatted_value = f"{{{', '.join(value.keys())}}}"
+        try:
+            # Use JSON formatting for clean, readable output
+            if indent:
+                # Multi-line indented JSON for complex structures
+                return json.dumps(settings, indent=2, sort_keys=True, default=str)
             else:
-                formatted_value = str(value)
-
-            items.append(f"{key}: {formatted_value}")
-
-        result = "{" + ", ".join(items)
-
-        # Add indicator if there are more items
-        remaining = len(settings) - max_items
-        if remaining > 0:
-            result += f", ...and {remaining} more"
-
-        result += "}"
-        return result
+                # Single-line compact JSON
+                return json.dumps(settings, sort_keys=True, default=str)
+        except (TypeError, ValueError) as e:
+            # Fallback if JSON serialization fails
+            self.logger.debug(f"Failed to JSON serialize settings: {e}")
+            return str(settings)
 
     def load_config(self, config_path: str) -> Config:
         """Load and validate configuration from YAML file"""
@@ -758,7 +737,8 @@ class RepoSyncer:
         self._log_section("Workflow Permissions Verification")
 
         # Check source organization
-        self.logger.info(f"\nChecking source organization: {source_org}")
+        self.logger.info("")
+        self.logger.info(f"Checking source organization: {source_org}")
         success, perms, msg = self._check_org_actions_permissions(source_org)
 
         if not success:
@@ -804,7 +784,8 @@ class RepoSyncer:
 
         # Check source workflow repository access if specified
         if source_workflow_repo:
-            self.logger.info(f"\nChecking source workflow repository: {source_org}/{source_workflow_repo}")
+            self.logger.info("")
+            self.logger.info(f"Checking source workflow repository: {source_org}/{source_workflow_repo}")
             success, access_level, msg = self._check_repo_workflow_access(source_org, source_workflow_repo)
 
             if not success:
@@ -828,7 +809,8 @@ class RepoSyncer:
 
         # Check target organizations
         for target_org in target_orgs:
-            self.logger.info(f"\nChecking target organization: {target_org}")
+            self.logger.info("")
+            self.logger.info(f"Checking target organization: {target_org}")
             success, perms, msg = self._check_org_actions_permissions(target_org)
 
             if not success:
@@ -876,17 +858,20 @@ class RepoSyncer:
 
         # Summary
         separator = "=" * 70
-        self.logger.info("\n" + separator)
+        self.logger.info("")
+        self.logger.info(separator)
         if warnings:
             self.logger.warning(f"Verification Complete: {len(warnings)} warning(s) found")
-            self.logger.warning("\n  Recommendations:")
+            self.logger.info("")
+            self.logger.warning("  Recommendations:")
             self.logger.warning("  → Ensure organizations have Actions enabled (Settings > Actions > General)")
             self.logger.warning("  → Set 'Allowed actions' to 'all' or configure 'selected' with appropriate patterns")
             self.logger.warning("  → For workflow source repos, set Access to 'organization' (Repo Settings > Actions > General)")
             self.logger.warning("  → See: https://docs.github.com/en/organizations/managing-organization-settings/disabling-or-limiting-github-actions-for-your-organization")
         else:
             self.logger.info("✓ Verification Complete: No issues found")
-        self.logger.info(separator + "\n")
+        self.logger.info(separator)
+        self.logger.info("")
 
         return {'warnings': warnings}
 
@@ -950,7 +935,7 @@ class RepoSyncer:
         except GithubException as e:
             self.logger.warning(f"Failed to set Actions permissions for {org}/{repo_name}")
             self.logger.warning(f"  Target: {org}/{repo_name}")
-            self.logger.warning(f"  Attempted: {self._format_settings_for_log(settings, max_items=10)}")
+            self.logger.warning(f"  Attempted: {self._format_settings_for_log(settings)}")
             if e.status == 403:
                 self.logger.warning(f"  Error: 403 Forbidden - Insufficient permissions or Actions disabled at organization level")
             else:
@@ -1019,7 +1004,7 @@ class RepoSyncer:
         except GithubException as e:
             self.logger.warning(f"Failed to set selected actions for {org}/{repo_name}")
             self.logger.warning(f"  Target: {org}/{repo_name}")
-            self.logger.warning(f"  Attempted: {self._format_settings_for_log(settings, max_items=10)}")
+            self.logger.warning(f"  Attempted: {self._format_settings_for_log(settings)}")
             self.logger.warning(f"  Error: {e}")
             return False
         except Exception as e:
@@ -1085,7 +1070,7 @@ class RepoSyncer:
         except GithubException as e:
             self.logger.warning(f"Failed to set workflow permissions for {org}/{repo_name}")
             self.logger.warning(f"  Target: {org}/{repo_name}")
-            self.logger.warning(f"  Attempted: {self._format_settings_for_log(settings, max_items=10)}")
+            self.logger.warning(f"  Attempted: {self._format_settings_for_log(settings)}")
             self.logger.warning(f"  Error: {e}")
             return False
         except Exception as e:
@@ -1162,7 +1147,7 @@ class RepoSyncer:
         except GithubException as e:
             self.logger.warning(f"Failed to set workflow access level for {org}/{repo_name}")
             self.logger.warning(f"  Target: {org}/{repo_name}")
-            self.logger.warning(f"  Attempted: {self._format_settings_for_log(settings, max_items=10)}")
+            self.logger.warning(f"  Attempted: {self._format_settings_for_log(settings)}")
             self.logger.warning(f"  Error: {e}")
             return False
         except Exception as e:
@@ -1333,12 +1318,15 @@ class RepoSyncer:
 
             # Log warnings but continue with sync
             if verification_result.get('warnings'):
-                self.logger.warning(f"\n⚠️  {len(verification_result['warnings'])} permission warning(s) detected.")
+                self.logger.info("")
+                self.logger.warning(f"⚠️  {len(verification_result['warnings'])} permission warning(s) detected.")
                 self.logger.warning("Continuing with sync, but workflows may not function correctly.")
-                self.logger.warning("Review the warnings above and update organization/repository settings as needed.\n")
+                self.logger.warning("Review the warnings above and update organization/repository settings as needed.")
+                self.logger.info("")
         except Exception as e:
             self.logger.warning(f"⚠️  Failed to verify workflow permissions: {e}")
-            self.logger.warning("Continuing with sync anyway...\n")
+            self.logger.warning("Continuing with sync anyway...")
+            self.logger.info("")
 
         # Send Slack start notification
         thread_ts = None
@@ -1436,14 +1424,16 @@ class RepoSyncer:
 
         # Show details for errors
         if errors > 0:
-            self.logger.error("\nErrors encountered:")
+            self.logger.info("")
+            self.logger.error("Errors encountered:")
             for result in results:
                 if result.status == 'error':
                     self.logger.error(f"  → {result.target_org}/{result.repo_name}: {result.message}")
 
         # Show details for skipped repos
         if skipped > 0:
-            self.logger.warning("\nSkipped repositories:")
+            self.logger.info("")
+            self.logger.warning("Skipped repositories:")
             for result in results:
                 if result.status == 'skipped':
                     self.logger.warning(f"  → {result.target_org}/{result.repo_name}: {result.message}")
