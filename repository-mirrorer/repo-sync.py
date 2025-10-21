@@ -227,45 +227,66 @@ class RepoSyncer:
             self.logger.error(f"Failed to create repository {org}/{repo_name}: {e}")
             return False
 
-    def _mirror_clone(self, source_org: str, repo_name: str, temp_dir: str) -> bool:
-        """Clone repository as mirror"""
+    def _mirror_clone(self, source_org: str, repo_name: str, temp_dir: str, default_branch: str) -> bool:
+        """Clone repository default branch and tags"""
         source_url = f"https://github.com/{source_org}/{repo_name}.git"
         auth_url = self._get_auth_url(source_url)
 
         mirror_path = os.path.join(temp_dir, f"{repo_name}.git")
 
-        self.logger.debug(f"Mirror cloning {source_org}/{repo_name}")
+        self.logger.debug(f"Cloning {source_org}/{repo_name} (branch: {default_branch})")
 
+        # Clone only the default branch as bare repo
         returncode, stdout, stderr = self._run_command([
-            'git', 'clone', '--mirror', auth_url, mirror_path
+            'git', 'clone', '--bare', '--single-branch', '--branch', default_branch, auth_url, mirror_path
         ])
 
         if returncode != 0:
-            self.logger.error(f"Failed to mirror clone {source_org}/{repo_name}")
+            self.logger.error(f"Failed to clone {source_org}/{repo_name}")
             return False
+
+        # Fetch all tags
+        self.logger.debug(f"Fetching tags for {source_org}/{repo_name}")
+        returncode, stdout, stderr = self._run_command([
+            'git', 'fetch', 'origin', 'refs/tags/*:refs/tags/*'
+        ], cwd=mirror_path)
+
+        if returncode != 0:
+            self.logger.warning(f"Failed to fetch tags for {source_org}/{repo_name}: {stderr}")
+            # Don't fail the whole operation if tags fail
 
         return True
 
-    def _push_mirror(self, repo_name: str, temp_dir: str, target_org: str) -> bool:
-        """Push mirror to target organization"""
+    def _push_mirror(self, repo_name: str, temp_dir: str, target_org: str, default_branch: str) -> bool:
+        """Push default branch and tags to target organization"""
         mirror_path = os.path.join(temp_dir, f"{repo_name}.git")
         target_url = f"https://github.com/{target_org}/{repo_name}.git"
         auth_url = self._get_auth_url(target_url)
 
         if self.dry_run:
-            self.logger.info(f"[DRY RUN] Would push mirror to {target_org}/{repo_name}")
+            self.logger.info(f"[DRY RUN] Would push {default_branch} and tags to {target_org}/{repo_name}")
             return True
 
-        self.logger.debug(f"Pushing mirror to {target_org}/{repo_name}")
-
+        # Push default branch
+        self.logger.debug(f"Pushing {default_branch} to {target_org}/{repo_name}")
         returncode, stdout, stderr = self._run_command([
-            'git', 'push', '--mirror', auth_url
+            'git', 'push', auth_url, default_branch
         ], cwd=mirror_path)
 
         if returncode != 0:
-            self.logger.error(f"Failed to push mirror to {target_org}/{repo_name}")
+            self.logger.error(f"Failed to push {default_branch} to {target_org}/{repo_name}")
             self.logger.error(f"Error: {stderr}")
             return False
+
+        # Push tags
+        self.logger.debug(f"Pushing tags to {target_org}/{repo_name}")
+        returncode, stdout, stderr = self._run_command([
+            'git', 'push', auth_url, 'refs/tags/*:refs/tags/*'
+        ], cwd=mirror_path)
+
+        if returncode != 0:
+            self.logger.warning(f"Failed to push tags to {target_org}/{repo_name}: {stderr}")
+            # Don't fail the whole operation if tags fail
 
         return True
 
@@ -330,6 +351,16 @@ class RepoSyncer:
                 message='Failed to get source metadata'
             )
 
+        # Extract default branch
+        default_branch = source_metadata.get('default_branch')
+        if not default_branch:
+            return SyncResult(
+                repo_name=repo_name,
+                target_org=target_org,
+                status='error',
+                message='Failed to get default branch from source metadata'
+            )
+
         # Check if target repo exists
         target_exists = self._repo_exists(target_org, repo_name)
 
@@ -337,8 +368,8 @@ class RepoSyncer:
         temp_dir = tempfile.mkdtemp(prefix=f'repo-sync-{repo_name}-')
 
         try:
-            # Mirror clone from source
-            if not self._mirror_clone(source_org, repo_name, temp_dir):
+            # Clone default branch and tags from source
+            if not self._mirror_clone(source_org, repo_name, temp_dir, default_branch):
                 return SyncResult(
                     repo_name=repo_name,
                     target_org=target_org,
@@ -356,13 +387,13 @@ class RepoSyncer:
                         message='Failed to create repository in target org'
                     )
 
-                # Push mirror to target
-                if not self._push_mirror(repo_name, temp_dir, target_org):
+                # Push default branch and tags to target
+                if not self._push_mirror(repo_name, temp_dir, target_org, default_branch):
                     return SyncResult(
                         repo_name=repo_name,
                         target_org=target_org,
                         status='error',
-                        message='Failed to push mirror to target'
+                        message='Failed to push to target'
                     )
 
                 # Update metadata
@@ -383,7 +414,7 @@ class RepoSyncer:
 
                 if can_ff:
                     # Push updates
-                    if not self._push_mirror(repo_name, temp_dir, target_org):
+                    if not self._push_mirror(repo_name, temp_dir, target_org, default_branch):
                         return SyncResult(
                             repo_name=repo_name,
                             target_org=target_org,
