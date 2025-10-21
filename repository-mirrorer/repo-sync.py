@@ -60,6 +60,7 @@ class RepoSyncer:
         self.dry_run = dry_run
         self.verbose = verbose
         self.github = Github(token)
+        self.log_file_path = None  # Will be set by _setup_logger if needed
         self.logger = self._setup_logger()
 
     def _setup_logger(self) -> logging.Logger:
@@ -102,6 +103,22 @@ class RepoSyncer:
         handler.setFormatter(formatter)
         logger.addHandler(handler)
 
+        # Add file handler for Slack attachment
+        # Create temp log file
+        import tempfile
+        fd, self.log_file_path = tempfile.mkstemp(prefix='repo-sync-', suffix='.log', text=True)
+        os.close(fd)  # Close the file descriptor, we'll let logging open it
+
+        # Add file handler (always uses plain format, no colors)
+        file_handler = logging.FileHandler(self.log_file_path, mode='w')
+        file_handler.setLevel(level)
+        file_formatter = logging.Formatter(
+            '[%(asctime)s] %(levelname)-8s | %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        file_handler.setFormatter(file_formatter)
+        logger.addHandler(file_handler)
+
         # Log colorlog availability status (only in verbose mode)
         if self.verbose:
             if use_colors:
@@ -110,6 +127,7 @@ class RepoSyncer:
                 logger.debug("Colored logging disabled (not a TTY, output redirected)")
             else:
                 logger.debug("Colored logging unavailable (colorlog not installed)")
+            logger.debug(f"Logging to file: {self.log_file_path}")
 
         return logger
 
@@ -146,6 +164,124 @@ class RepoSyncer:
             # Fallback if JSON serialization fails
             self.logger.debug(f"Failed to JSON serialize settings: {e}")
             return str(settings)
+
+    def _validate_slack_config(self) -> Optional[int]:
+        """
+        Validate Slack configuration from environment variables.
+
+        Returns:
+            None if valid, error code (2-4) if configuration is missing/invalid
+        """
+        dry_run_flag = os.environ.get("SLACK_DRY_RUN")
+        token = os.environ.get("SLACK_BOT_TOKEN")
+        channel = os.environ.get("SLACK_CHANNEL")
+
+        if not token and not dry_run_flag:
+            return 3  # Missing token
+        if not channel and not dry_run_flag:
+            return 4  # Missing channel
+
+        return None
+
+    def _check_slack_dependencies(self) -> Optional[int]:
+        """
+        Check if required Slack dependencies are installed.
+
+        Returns:
+            None if dependencies available, 2 if missing
+        """
+        try:
+            import importlib
+            importlib.import_module('slack_sdk')
+            importlib.import_module('urllib3')
+            return None
+        except Exception:
+            # Allow dry-run mode even without dependencies
+            if os.environ.get("SLACK_DRY_RUN"):
+                return None
+            return 2
+
+    def _send_slack_notification(
+        self,
+        title: str,
+        message: str = "",
+        status: str = "info",
+        template: Optional[str] = None,
+        template_vars: Optional[Dict[str, str]] = None,
+        thread_ts: Optional[str] = None,
+        files: Optional[List[str]] = None
+    ) -> Tuple[int, Optional[str]]:
+        """
+        Send Slack notification via slack_notifier_sdk.py subprocess.
+
+        Args:
+            title: Notification title
+            message: Notification message body
+            status: Status level (info, success, warning, failure)
+            template: Template name (without .json extension)
+            template_vars: Dictionary of template variables
+            thread_ts: Thread timestamp for threading messages
+            files: List of file paths to attach
+
+        Returns:
+            Tuple of (exit_code, thread_ts)
+            Exit codes: 0=success, 1=error, 2=missing deps, 3=no token, 4=no channel
+        """
+        # Locate slack_notifier_sdk.py script
+        script_dir = Path(__file__).parent.parent
+        slack_script = (script_dir / "slack-notifier" / "slack_notifier_sdk.py").resolve()
+
+        # Validate configuration
+        config_error = self._validate_slack_config()
+        if config_error:
+            return (config_error, None)
+
+        # Check if script exists
+        if not slack_script.exists():
+            self.logger.debug(f"[SLACK] Notifier script not found: {slack_script}")
+            return (2, None)
+
+        # Check dependencies
+        dep_error = self._check_slack_dependencies()
+        if dep_error:
+            return (dep_error, None)
+
+        # Build command
+        dry_run_flag = bool(os.environ.get("SLACK_DRY_RUN"))
+        cmd = [sys.executable, str(slack_script), "--title", title, "--status", status]
+
+        if message:
+            cmd.extend(["--message", message])
+        if dry_run_flag:
+            cmd.append("--dry-run")
+        if template:
+            cmd.extend(["--template", template])
+        if template_vars:
+            for k, v in template_vars.items():
+                if k is not None and v is not None:
+                    cmd.extend(["--var", f"{k}={v}"])
+        if thread_ts:
+            cmd.extend(["--thread-ts", thread_ts])
+        if files:
+            for file_path in files:
+                cmd.extend(["--file", file_path])
+
+        # Execute command
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True)
+
+            # Extract thread_ts from output if this created a new thread
+            returned_thread_ts = None
+            if result.returncode == 0 and result.stdout:
+                for line in result.stdout.split('\n'):
+                    if line.startswith('thread_ts:'):
+                        returned_thread_ts = line.split(':', 1)[1].strip()
+                        break
+
+            return (result.returncode, returned_thread_ts or thread_ts)
+        except Exception as e:
+            self.logger.debug(f"[SLACK] Failed to execute notifier: {e}")
+            return (1, None)
 
     def load_config(self, config_path: str) -> Config:
         """Load and validate configuration from YAML file"""
@@ -1313,17 +1449,6 @@ class RepoSyncer:
             self.logger.warning("Continuing with sync anyway...")
             self.logger.info("")
 
-        # Send Slack start notification
-        thread_ts = None
-        try:
-            slack_rc, thread_ts = send_sync_start_notification(config)
-            if slack_rc == 0:
-                self.logger.debug("[SLACK] Sync start notification sent successfully")
-            elif slack_rc not in (2, 3, 4):  # Ignore missing deps/config errors
-                self.logger.debug(f"[SLACK] Start notification failed with code {slack_rc}")
-        except Exception as e:
-            self.logger.debug(f"[SLACK] Failed to send start notification: {e}")
-
         for repo_name in config.repositories:
             for target_org in config.target_orgs:
                 current += 1
@@ -1342,39 +1467,16 @@ class RepoSyncer:
                 elif result.status == 'error':
                     self.logger.error(f"  ✗ Error: {target_org}/{repo_name} → {result.message}")
 
-                # Send Slack progress notification (threaded)
-                try:
-                    # Get metadata for the notification
-                    metadata = None
-                    if result.status in ('created', 'updated'):
-                        try:
-                            metadata = self._get_repo_metadata(target_org, repo_name)
-                        except Exception:
-                            pass  # Metadata is optional for notifications
-
-                    slack_rc = send_repo_sync_notification(
-                        result,
-                        config.source_org,
-                        metadata=metadata,
-                        thread_ts=thread_ts
-                    )
-                    if slack_rc == 0:
-                        self.logger.debug(f"[SLACK] Progress notification sent for {repo_name}")
-                    elif slack_rc not in (2, 3, 4):
-                        self.logger.debug(f"[SLACK] Progress notification failed with code {slack_rc}")
-                except Exception as e:
-                    self.logger.debug(f"[SLACK] Failed to send progress notification: {e}")
-
         # Calculate duration
         duration = time.time() - start_time
 
-        # Send Slack summary notification (threaded)
+        # Send Slack summary notification with log file
         try:
             slack_rc = send_sync_summary_notification(
                 config,
                 results,
                 duration_seconds=duration,
-                thread_ts=thread_ts
+                log_file_path=self.log_file_path
             )
             if slack_rc == 0:
                 self.logger.debug("[SLACK] Summary notification sent successfully")
@@ -1475,7 +1577,8 @@ def send_slack_notification(
     status: str = "info",
     template: Optional[str] = None,
     template_vars: Optional[Dict[str, str]] = None,
-    thread_ts: Optional[str] = None
+    thread_ts: Optional[str] = None,
+    files: Optional[List[str]] = None
 ) -> Tuple[int, Optional[str]]:
     """
     Send notification via Slack using companion notifier script.
@@ -1489,6 +1592,7 @@ def send_slack_notification(
         template: Template name (optional)
         template_vars: Template variables (optional)
         thread_ts: Thread timestamp for threaded replies (optional)
+        files: List of file paths to attach (optional)
 
     Returns:
         Tuple of (exit_code, thread_ts) where thread_ts is returned for new threads
@@ -1527,6 +1631,11 @@ def send_slack_notification(
         for k, v in template_vars.items():
             if k is not None and v is not None:
                 cmd.extend(["--var", f"{k}={v}"])
+
+    if files:
+        for file_path in files:
+            if file_path and os.path.exists(file_path):
+                cmd.extend(["--file", file_path])
 
     # Note: thread_ts support would require modifications to slack_notifier_sdk.py
     # For now, we'll track it internally but won't pass it to the notifier
@@ -1658,16 +1767,16 @@ def send_sync_summary_notification(
     config: Config,
     results: List[SyncResult],
     duration_seconds: Optional[float] = None,
-    thread_ts: Optional[str] = None
+    log_file_path: Optional[str] = None
 ) -> int:
     """
-    Send Slack notification with sync summary.
+    Send Slack notification with sync summary and log file.
 
     Args:
         config: Configuration object
         results: List of SyncResult objects
         duration_seconds: Duration of sync in seconds (optional)
-        thread_ts: Thread timestamp for threading (optional)
+        log_file_path: Path to log file to attach (optional)
 
     Returns:
         Exit code
@@ -1735,22 +1844,28 @@ def send_sync_summary_notification(
     skipped_list_str = "\n".join([f"{r.target_org}/{r.repo_name}: {r.message}"
                                   for r in results if r.status == 'skipped'][:10])
 
+    # Build template variables for the summary
+    target_orgs = ", ".join(config.target_orgs)
+    template_vars = {
+        "TOTAL_REPOS": str(len(config.repositories)),
+        "SUCCESS_COUNT": str(created + updated),
+        "FAILED_COUNT": str(errors),
+        "SKIPPED_COUNT": str(skipped),
+        "TARGET_ORGS": target_orgs,
+        "DURATION": f"{int(duration_seconds // 60)}m {int(duration_seconds % 60)}s" if duration_seconds else "N/A",
+        "STATUS": overall_status.upper()
+    }
+
+    # Attach log file if provided
+    files = [log_file_path] if log_file_path else None
+
     exit_code, _ = send_slack_notification(
         title,
         message,
         status=overall_status,
         template="repo_sync_summary",
-        template_vars={
-            "TOTAL_OPS": str(total),
-            "CREATED": str(created),
-            "UPDATED": str(updated),
-            "SKIPPED": str(skipped),
-            "ERRORS": str(errors),
-            "DURATION": f"{int(duration_seconds // 60)}m {int(duration_seconds % 60)}s" if duration_seconds else "N/A",
-            "ERROR_LIST": error_list_str if error_list_str else "None",
-            "SKIPPED_LIST": skipped_list_str if skipped_list_str else "None"
-        },
-        thread_ts=thread_ts
+        template_vars=template_vars,
+        files=files
     )
 
     return exit_code
@@ -1807,18 +1922,28 @@ Environment Variables:
     # Initialize syncer
     syncer = RepoSyncer(token=token, dry_run=args.dry_run, verbose=args.verbose)
 
-    # Load configuration
-    config = syncer.load_config(args.config)
+    try:
+        # Load configuration
+        config = syncer.load_config(args.config)
 
-    # Perform sync
-    results = syncer.sync_all(config)
+        # Perform sync
+        results = syncer.sync_all(config)
 
-    # Print summary
-    syncer.print_summary(results)
+        # Print summary
+        syncer.print_summary(results)
 
-    # Exit with error code if any errors occurred
-    errors = sum(1 for r in results if r.status == 'error')
-    sys.exit(1 if errors > 0 else 0)
+        # Exit with error code if any errors occurred
+        errors = sum(1 for r in results if r.status == 'error')
+        exit_code = 1 if errors > 0 else 0
+    finally:
+        # Clean up log file
+        if syncer.log_file_path and os.path.exists(syncer.log_file_path):
+            try:
+                os.remove(syncer.log_file_path)
+            except Exception:
+                pass  # Ignore cleanup errors
+
+    sys.exit(exit_code)
 
 
 if __name__ == '__main__':
