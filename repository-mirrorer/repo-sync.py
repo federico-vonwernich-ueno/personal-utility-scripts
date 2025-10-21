@@ -291,7 +291,7 @@ class RepoSyncer:
         return True
 
     def _can_fast_forward(self, repo_name: str, temp_dir: str,
-                         source_org: str, target_org: str) -> Tuple[bool, str]:
+                         source_org: str, target_org: str, default_branch: str) -> Tuple[bool, str]:
         """
         Check if target repo can be fast-forwarded to match source.
         Returns (can_ff, message)
@@ -316,14 +316,11 @@ class RepoSyncer:
         if returncode != 0:
             return False, f"Failed to fetch from target: {stderr}"
 
-        # Get default branch from source metadata
-        source_repo = self.github.get_repo(f"{source_org}/{repo_name}")
-        default_branch = source_repo.default_branch
-
         # Check if target's default branch is ancestor of source's default branch
+        # In bare repos, local branches are at refs/heads/<branch> (just use <branch>)
         returncode, stdout, stderr = self._run_command([
             'git', 'merge-base', '--is-ancestor',
-            f'target/{default_branch}', f'origin/{default_branch}'
+            f'target/{default_branch}', default_branch
         ], cwd=mirror_path)
 
         if returncode == 0:
@@ -409,7 +406,7 @@ class RepoSyncer:
             else:
                 # Repository exists - check if we can fast-forward
                 can_ff, ff_message = self._can_fast_forward(
-                    repo_name, temp_dir, source_org, target_org
+                    repo_name, temp_dir, source_org, target_org, default_branch
                 )
 
                 if can_ff:
