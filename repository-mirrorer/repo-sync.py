@@ -195,10 +195,14 @@ class RepoSyncer:
             importlib.import_module('slack_sdk')
             importlib.import_module('urllib3')
             return None
-        except Exception:
-            # Allow dry-run mode even without dependencies
+        except ModuleNotFoundError as e:
+            # Module truly not installed
             if os.environ.get("SLACK_DRY_RUN"):
                 return None
+            return 2
+        except Exception as e:
+            # Some other import error - show it
+            self.logger.warning(f"Slack dependencies found but failed to import: {e}")
             return 2
 
     def _send_slack_notification(
@@ -1568,13 +1572,18 @@ def check_slack_dependencies() -> Optional[int]:
         importlib.import_module('slack_sdk')
         importlib.import_module('urllib3')
         return None
-    except Exception:
+    except ModuleNotFoundError as e:
+        # Module truly not installed
         dry_run_flag = os.environ.get("SLACK_DRY_RUN")
-
         if dry_run_flag:
             return None  # Allow dry-run to proceed
         else:
             return 2  # MISSING_DEPENDENCY
+    except Exception as e:
+        # Some other import error - let the caller see it
+        import sys
+        print(f"Warning: Slack dependencies found but failed to import: {e}", file=sys.stderr)
+        return 2
 
 
 def send_slack_notification(
