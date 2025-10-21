@@ -25,6 +25,14 @@ except ImportError:
     print("Please run: pip install PyGithub pyyaml")
     sys.exit(1)
 
+# Try to import colorlog for colored output
+try:
+    from colorlog import ColoredFormatter
+    HAS_COLORLOG = True
+except ImportError:
+    HAS_COLORLOG = False
+    # Fallback: colorlog not available, will use standard logging
+
 
 @dataclass
 class SyncResult:
@@ -54,24 +62,66 @@ class RepoSyncer:
         self.logger = self._setup_logger()
 
     def _setup_logger(self) -> logging.Logger:
-        """Configure logging"""
+        """Configure logging with colors and improved formatting"""
         logger = logging.getLogger('repo-sync')
         level = logging.DEBUG if self.verbose else logging.INFO
         logger.setLevel(level)
 
-        handler = logging.StreamHandler()
+        # Remove existing handlers to avoid duplicates
+        logger.handlers.clear()
+
+        handler = logging.StreamHandler(sys.stdout)
         handler.setLevel(level)
-        formatter = logging.Formatter(
-            '%(asctime)s - %(levelname)s - %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
-        )
+
+        # Check if output is to a terminal (TTY) for color support
+        use_colors = HAS_COLORLOG and hasattr(sys.stdout, 'isatty') and sys.stdout.isatty()
+
+        if use_colors:
+            # Use colored formatter with improved format
+            formatter = ColoredFormatter(
+                '[%(asctime)s] %(log_color)s%(levelname)-8s%(reset)s | %(message)s',
+                datefmt='%Y-%m-%d %H:%M:%S',
+                log_colors={
+                    'DEBUG': 'cyan',
+                    'INFO': 'green',
+                    'WARNING': 'yellow',
+                    'ERROR': 'red',
+                    'CRITICAL': 'red,bg_white',
+                },
+                secondary_log_colors={},
+                style='%'
+            )
+        else:
+            # Fallback to standard formatter (for log files or when colorlog unavailable)
+            formatter = logging.Formatter(
+                '[%(asctime)s] %(levelname)-8s | %(message)s',
+                datefmt='%Y-%m-%d %H:%M:%S'
+            )
+
         handler.setFormatter(formatter)
         logger.addHandler(handler)
 
+        # Log colorlog availability status (only in verbose mode)
+        if self.verbose:
+            if use_colors:
+                logger.debug("Colored logging enabled (colorlog available, TTY detected)")
+            elif HAS_COLORLOG:
+                logger.debug("Colored logging disabled (not a TTY, output redirected)")
+            else:
+                logger.debug("Colored logging unavailable (colorlog not installed)")
+
         return logger
+
+    def _log_section(self, title: str, width: int = 70):
+        """Log a section header with visual separator"""
+        separator = "=" * width
+        self.logger.info(separator)
+        self.logger.info(title)
+        self.logger.info(separator)
 
     def load_config(self, config_path: str) -> Config:
         """Load and validate configuration from YAML file"""
+        self._log_section("Configuration Loading")
         self.logger.info(f"Loading configuration from {config_path}")
 
         try:
@@ -415,7 +465,7 @@ class RepoSyncer:
 
         mirror_path = os.path.join(temp_dir, f"{repo_name}.git")
 
-        self.logger.debug(f"Cloning {source_org}/{repo_name} (branch: {default_branch})")
+        self.logger.debug(f"  → Cloning from source: {source_org}/{repo_name} (branch: {default_branch})")
 
         # Clone only the default branch as bare repo
         returncode, stdout, stderr = self._run_command([
@@ -427,7 +477,7 @@ class RepoSyncer:
             return False
 
         # Fetch all tags
-        self.logger.debug(f"Fetching tags for {source_org}/{repo_name}")
+        self.logger.debug(f"  → Fetching tags: {source_org}/{repo_name}")
         returncode, stdout, stderr = self._run_command([
             'git', 'fetch', 'origin', 'refs/tags/*:refs/tags/*'
         ], cwd=mirror_path)
@@ -449,7 +499,7 @@ class RepoSyncer:
             return True
 
         # Push default branch
-        self.logger.debug(f"Pushing {default_branch} to {target_org}/{repo_name}")
+        self.logger.debug(f"  → Pushing branch '{default_branch}' to {target_org}/{repo_name}")
         returncode, stdout, stderr = self._run_command([
             'git', 'push', auth_url, default_branch
         ], cwd=mirror_path)
@@ -460,7 +510,7 @@ class RepoSyncer:
             return False
 
         # Push tags
-        self.logger.debug(f"Pushing tags to {target_org}/{repo_name}")
+        self.logger.debug(f"  → Pushing tags to {target_org}/{repo_name}")
         returncode, stdout, stderr = self._run_command([
             'git', 'push', auth_url, 'refs/tags/*:refs/tags/*'
         ], cwd=mirror_path)
@@ -633,9 +683,7 @@ class RepoSyncer:
         """
         warnings = []
 
-        self.logger.info("\n" + "="*70)
-        self.logger.info("WORKFLOW PERMISSIONS VERIFICATION")
-        self.logger.info("="*70)
+        self._log_section("Workflow Permissions Verification")
 
         # Check source organization
         self.logger.info(f"\nChecking source organization: {source_org}")
@@ -755,17 +803,18 @@ class RepoSyncer:
                                 self.logger.info(f"  ✓ Organization pattern found in allowed actions")
 
         # Summary
-        self.logger.info("\n" + "="*70)
+        separator = "=" * 70
+        self.logger.info("\n" + separator)
         if warnings:
-            self.logger.warning(f"VERIFICATION COMPLETE: {len(warnings)} warning(s) found")
-            self.logger.warning("\nRecommendations:")
-            self.logger.warning("  1. Ensure organizations have Actions enabled (Settings > Actions > General)")
-            self.logger.warning("  2. Set 'Allowed actions' to 'all' or configure 'selected' with appropriate patterns")
-            self.logger.warning("  3. For workflow source repos, set Access to 'organization' (Repo Settings > Actions > General)")
-            self.logger.warning("  4. See: https://docs.github.com/en/organizations/managing-organization-settings/disabling-or-limiting-github-actions-for-your-organization")
+            self.logger.warning(f"Verification Complete: {len(warnings)} warning(s) found")
+            self.logger.warning("\n  Recommendations:")
+            self.logger.warning("  → Ensure organizations have Actions enabled (Settings > Actions > General)")
+            self.logger.warning("  → Set 'Allowed actions' to 'all' or configure 'selected' with appropriate patterns")
+            self.logger.warning("  → For workflow source repos, set Access to 'organization' (Repo Settings > Actions > General)")
+            self.logger.warning("  → See: https://docs.github.com/en/organizations/managing-organization-settings/disabling-or-limiting-github-actions-for-your-organization")
         else:
-            self.logger.info("VERIFICATION COMPLETE: No issues found")
-        self.logger.info("="*70 + "\n")
+            self.logger.info("✓ Verification Complete: No issues found")
+        self.logger.info(separator + "\n")
 
         return {'warnings': warnings}
 
@@ -1036,7 +1085,7 @@ class RepoSyncer:
         Sync a single repository from source to target organization.
         Returns SyncResult with status and message.
         """
-        self.logger.info(f"Syncing {repo_name}: {source_org} -> {target_org}")
+        self.logger.debug(f"Starting sync: {repo_name} ({source_org} → {target_org})")
 
         # Get source metadata
         source_metadata = self._get_repo_metadata(source_org, repo_name)
@@ -1166,9 +1215,9 @@ class RepoSyncer:
         total_syncs = len(config.repositories) * len(config.target_orgs)
         current = 0
 
-        self.logger.info(f"Starting sync: {len(config.repositories)} repositories "
-                        f"to {len(config.target_orgs)} target organizations "
-                        f"({total_syncs} total operations)")
+        self._log_section("Repository Sync")
+        self.logger.info(f"Starting sync: {len(config.repositories)} repositories → "
+                        f"{len(config.target_orgs)} target organizations ({total_syncs} operations)")
 
         # Verify workflow permissions before syncing
         # Try to detect if any repository contains workflows (look for common workflow repo names)
@@ -1213,20 +1262,20 @@ class RepoSyncer:
         for repo_name in config.repositories:
             for target_org in config.target_orgs:
                 current += 1
-                self.logger.info(f"[{current}/{total_syncs}] Processing {repo_name} -> {target_org}")
+                self.logger.info(f"[{current}/{total_syncs}] Syncing: {repo_name} ({config.source_org} → {target_org})")
 
                 result = self.sync_repository(config.source_org, repo_name, target_org)
                 results.append(result)
 
-                # Log result
+                # Log result with clear visual indicators
                 if result.status == 'created':
-                    self.logger.info(f"✓ Created: {target_org}/{repo_name}")
+                    self.logger.info(f"  ✓ Created: {target_org}/{repo_name}")
                 elif result.status == 'updated':
-                    self.logger.info(f"✓ Updated: {target_org}/{repo_name}")
+                    self.logger.info(f"  ✓ Updated: {target_org}/{repo_name}")
                 elif result.status == 'skipped':
-                    self.logger.warning(f"⊘ Skipped: {target_org}/{repo_name} - {result.message}")
+                    self.logger.warning(f"  ⊘ Skipped: {target_org}/{repo_name} → {result.message}")
                 elif result.status == 'error':
-                    self.logger.error(f"✗ Error: {target_org}/{repo_name} - {result.message}")
+                    self.logger.error(f"  ✗ Error: {target_org}/{repo_name} → {result.message}")
 
                 # Send Slack progress notification (threaded)
                 try:
@@ -1272,34 +1321,40 @@ class RepoSyncer:
         return results
 
     def print_summary(self, results: List[SyncResult]):
-        """Print summary of sync results"""
+        """Print summary of sync results with improved formatting"""
         total = len(results)
         created = sum(1 for r in results if r.status == 'created')
         updated = sum(1 for r in results if r.status == 'updated')
         skipped = sum(1 for r in results if r.status == 'skipped')
         errors = sum(1 for r in results if r.status == 'error')
 
-        print("\n" + "="*60)
-        print("SYNC SUMMARY")
-        print("="*60)
-        print(f"Total operations: {total}")
-        print(f"Created:          {created}")
-        print(f"Updated:          {updated}")
-        print(f"Skipped:          {skipped}")
-        print(f"Errors:           {errors}")
-        print("="*60)
+        # Add spacing before summary
+        print()
+        self._log_section("Sync Summary")
 
+        # Use aligned formatting for better readability
+        self.logger.info(f"Total operations:  {total:>3}")
+        self.logger.info(f"Created:           {created:>3}")
+        self.logger.info(f"Updated:           {updated:>3}")
+        self.logger.info(f"Skipped:           {skipped:>3}")
+        self.logger.info(f"Errors:            {errors:>3}")
+
+        # Add separator
+        self.logger.info("=" * 70)
+
+        # Show details for errors
         if errors > 0:
-            print("\nErrors encountered:")
+            self.logger.error("\nErrors encountered:")
             for result in results:
                 if result.status == 'error':
-                    print(f"  - {result.target_org}/{result.repo_name}: {result.message}")
+                    self.logger.error(f"  → {result.target_org}/{result.repo_name}: {result.message}")
 
+        # Show details for skipped repos
         if skipped > 0:
-            print("\nSkipped repositories:")
+            self.logger.warning("\nSkipped repositories:")
             for result in results:
                 if result.status == 'skipped':
-                    print(f"  - {result.target_org}/{result.repo_name}: {result.message}")
+                    self.logger.warning(f"  → {result.target_org}/{result.repo_name}: {result.message}")
 
 
 # ============================================================================
