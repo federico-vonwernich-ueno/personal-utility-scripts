@@ -119,6 +119,54 @@ class RepoSyncer:
         self.logger.info(title)
         self.logger.info(separator)
 
+    def _format_settings_for_log(self, settings: Dict, max_items: int = 5, max_value_len: int = 50) -> str:
+        """
+        Format settings dictionary for readable log output.
+
+        Args:
+            settings: Dictionary of settings to format
+            max_items: Maximum number of items to show (default 5)
+            max_value_len: Maximum length for string values (default 50)
+
+        Returns:
+            Formatted string representation of settings
+        """
+        if not settings:
+            return "{}"
+
+        items = []
+        for key, value in list(settings.items())[:max_items]:
+            # Format value based on type
+            if isinstance(value, str):
+                # Truncate long strings
+                if len(value) > max_value_len:
+                    formatted_value = f"'{value[:max_value_len]}...'"
+                else:
+                    formatted_value = f"'{value}'"
+            elif isinstance(value, (list, tuple)):
+                # Show list length if long
+                if len(value) > 3:
+                    formatted_value = f"[{', '.join(map(str, value[:3]))}, ...{len(value)-3} more]"
+                else:
+                    formatted_value = str(value)
+            elif isinstance(value, dict):
+                # Show nested dict keys
+                formatted_value = f"{{{', '.join(value.keys())}}}"
+            else:
+                formatted_value = str(value)
+
+            items.append(f"{key}: {formatted_value}")
+
+        result = "{" + ", ".join(items)
+
+        # Add indicator if there are more items
+        remaining = len(settings) - max_items
+        if remaining > 0:
+            result += f", ...and {remaining} more"
+
+        result += "}"
+        return result
+
     def load_config(self, config_path: str) -> Config:
         """Load and validate configuration from YAML file"""
         self._log_section("Configuration Loading")
@@ -340,7 +388,10 @@ class RepoSyncer:
                 self.logger.debug(f"Updated repository settings for {org}/{repo_name}")
             except Exception as e:
                 settings_synced['failed'].append(f'repository_settings: {e}')
-                self.logger.warning(f"Failed to update some repository settings for {org}/{repo_name}: {e}")
+                self.logger.warning(f"Failed to sync repository_settings for {org}/{repo_name}")
+                self.logger.warning(f"  Target: {org}/{repo_name}")
+                self.logger.warning(f"  Attempted: {self._format_settings_for_log(edit_params)}")
+                self.logger.warning(f"  Error: {e}")
 
             # Update topics
             if 'topics' in metadata and metadata['topics']:
@@ -349,7 +400,10 @@ class RepoSyncer:
                     settings_synced['success'].append('topics')
                 except Exception as e:
                     settings_synced['failed'].append(f'topics: {e}')
-                    self.logger.warning(f"Failed to update topics: {e}")
+                    self.logger.warning(f"Failed to sync topics for {org}/{repo_name}")
+                    self.logger.warning(f"  Target: {org}/{repo_name}")
+                    self.logger.warning(f"  Attempted topics: {metadata['topics']}")
+                    self.logger.warning(f"  Error: {e}")
 
             # Update default branch (if different)
             if 'default_branch' in metadata:
@@ -362,10 +416,12 @@ class RepoSyncer:
                         repo.edit(default_branch=new_default)
                         settings_synced['success'].append('default_branch')
                         self.logger.debug(f"Updated default branch to {new_default}")
-                    except GithubException:
+                    except GithubException as e:
                         settings_synced['failed'].append(f'default_branch: Branch {new_default} does not exist')
-                        self.logger.warning(f"Branch {new_default} doesn't exist in target, "
-                                          f"keeping default as {current_default}")
+                        self.logger.warning(f"Failed to sync default_branch for {org}/{repo_name}")
+                        self.logger.warning(f"  Target: {org}/{repo_name}")
+                        self.logger.warning(f"  Attempted branch: '{new_default}'")
+                        self.logger.warning(f"  Error: Branch does not exist in target repository (current: '{current_default}')")
 
             # Sync GitHub Actions settings
             if 'actions_settings' in metadata:
@@ -377,6 +433,10 @@ class RepoSyncer:
                         settings_synced['success'].append('actions_permissions')
                     else:
                         settings_synced['failed'].append('actions_permissions')
+                        self.logger.warning(f"Failed to sync actions_permissions for {org}/{repo_name}")
+                        self.logger.warning(f"  Target: {org}/{repo_name}")
+                        self.logger.warning(f"  Attempted: {self._format_settings_for_log(actions_settings['actions_permissions'])}")
+                        self.logger.warning(f"  See error details in logs above")
 
                     # Sync selected actions (if allowed_actions is 'selected')
                     if 'selected_actions' in actions_settings:
@@ -384,6 +444,10 @@ class RepoSyncer:
                             settings_synced['success'].append('selected_actions')
                         else:
                             settings_synced['failed'].append('selected_actions')
+                            self.logger.warning(f"Failed to sync selected_actions for {org}/{repo_name}")
+                            self.logger.warning(f"  Target: {org}/{repo_name}")
+                            self.logger.warning(f"  Attempted: {self._format_settings_for_log(actions_settings['selected_actions'])}")
+                            self.logger.warning(f"  See error details in logs above")
 
                 # Sync workflow permissions
                 if 'workflow_permissions' in actions_settings:
@@ -391,6 +455,10 @@ class RepoSyncer:
                         settings_synced['success'].append('workflow_permissions')
                     else:
                         settings_synced['failed'].append('workflow_permissions')
+                        self.logger.warning(f"Failed to sync workflow_permissions for {org}/{repo_name}")
+                        self.logger.warning(f"  Target: {org}/{repo_name}")
+                        self.logger.warning(f"  Attempted: {self._format_settings_for_log(actions_settings['workflow_permissions'])}")
+                        self.logger.warning(f"  See error details in logs above")
 
                 # Sync workflow access level (for private repos)
                 if 'workflow_access' in actions_settings:
@@ -398,6 +466,10 @@ class RepoSyncer:
                         settings_synced['success'].append('workflow_access')
                     else:
                         settings_synced['failed'].append('workflow_access')
+                        self.logger.warning(f"Failed to sync workflow_access for {org}/{repo_name}")
+                        self.logger.warning(f"  Target: {org}/{repo_name}")
+                        self.logger.warning(f"  Attempted: {self._format_settings_for_log(actions_settings['workflow_access'])}")
+                        self.logger.warning(f"  See error details in logs above")
 
             # Log summary
             total_success = len(settings_synced['success'])
@@ -876,13 +948,18 @@ class RepoSyncer:
             self.logger.debug(f"Set Actions permissions for {org}/{repo_name}")
             return True
         except GithubException as e:
+            self.logger.warning(f"Failed to set Actions permissions for {org}/{repo_name}")
+            self.logger.warning(f"  Target: {org}/{repo_name}")
+            self.logger.warning(f"  Attempted: {self._format_settings_for_log(settings, max_items=10)}")
             if e.status == 403:
-                self.logger.warning(f"Insufficient permissions to set Actions settings for {org}/{repo_name}")
+                self.logger.warning(f"  Error: 403 Forbidden - Insufficient permissions or Actions disabled at organization level")
             else:
-                self.logger.warning(f"Failed to set Actions permissions for {org}/{repo_name}: {e}")
+                self.logger.warning(f"  Error: {e}")
             return False
         except Exception as e:
-            self.logger.warning(f"Unexpected error setting Actions permissions: {e}")
+            self.logger.warning(f"Failed to set Actions permissions for {org}/{repo_name}")
+            self.logger.warning(f"  Target: {org}/{repo_name}")
+            self.logger.warning(f"  Error: Unexpected error - {e}")
             return False
 
     def _get_repo_actions_selected_actions(self, org: str, repo_name: str) -> Tuple[bool, Optional[Dict]]:
@@ -940,10 +1017,15 @@ class RepoSyncer:
             self.logger.debug(f"Set selected actions for {org}/{repo_name}")
             return True
         except GithubException as e:
-            self.logger.warning(f"Failed to set selected actions for {org}/{repo_name}: {e}")
+            self.logger.warning(f"Failed to set selected actions for {org}/{repo_name}")
+            self.logger.warning(f"  Target: {org}/{repo_name}")
+            self.logger.warning(f"  Attempted: {self._format_settings_for_log(settings, max_items=10)}")
+            self.logger.warning(f"  Error: {e}")
             return False
         except Exception as e:
-            self.logger.warning(f"Unexpected error setting selected actions: {e}")
+            self.logger.warning(f"Failed to set selected actions for {org}/{repo_name}")
+            self.logger.warning(f"  Target: {org}/{repo_name}")
+            self.logger.warning(f"  Error: Unexpected error - {e}")
             return False
 
     def _get_repo_workflow_permissions(self, org: str, repo_name: str) -> Tuple[bool, Optional[Dict]]:
@@ -1001,10 +1083,15 @@ class RepoSyncer:
             self.logger.debug(f"Set workflow permissions for {org}/{repo_name}")
             return True
         except GithubException as e:
-            self.logger.warning(f"Failed to set workflow permissions for {org}/{repo_name}: {e}")
+            self.logger.warning(f"Failed to set workflow permissions for {org}/{repo_name}")
+            self.logger.warning(f"  Target: {org}/{repo_name}")
+            self.logger.warning(f"  Attempted: {self._format_settings_for_log(settings, max_items=10)}")
+            self.logger.warning(f"  Error: {e}")
             return False
         except Exception as e:
-            self.logger.warning(f"Unexpected error setting workflow permissions: {e}")
+            self.logger.warning(f"Failed to set workflow permissions for {org}/{repo_name}")
+            self.logger.warning(f"  Target: {org}/{repo_name}")
+            self.logger.warning(f"  Error: Unexpected error - {e}")
             return False
 
     def _get_repo_workflow_access_level(self, org: str, repo_name: str) -> Tuple[bool, Optional[Dict]]:
@@ -1073,10 +1160,15 @@ class RepoSyncer:
             self.logger.debug(f"Set workflow access level for {org}/{repo_name}")
             return True
         except GithubException as e:
-            self.logger.warning(f"Failed to set workflow access level for {org}/{repo_name}: {e}")
+            self.logger.warning(f"Failed to set workflow access level for {org}/{repo_name}")
+            self.logger.warning(f"  Target: {org}/{repo_name}")
+            self.logger.warning(f"  Attempted: {self._format_settings_for_log(settings, max_items=10)}")
+            self.logger.warning(f"  Error: {e}")
             return False
         except Exception as e:
-            self.logger.warning(f"Unexpected error setting workflow access level: {e}")
+            self.logger.warning(f"Failed to set workflow access level for {org}/{repo_name}")
+            self.logger.warning(f"  Target: {org}/{repo_name}")
+            self.logger.warning(f"  Error: Unexpected error - {e}")
             return False
 
     def sync_repository(self, source_org: str, repo_name: str,
