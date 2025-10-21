@@ -146,39 +146,160 @@ class RepoSyncer:
             raise
 
     def _get_repo_metadata(self, org: str, repo_name: str) -> Dict:
-        """Get repository metadata"""
+        """Get comprehensive repository metadata and settings"""
         try:
             repo = self.github.get_repo(f"{org}/{repo_name}")
-            return {
+
+            # Basic metadata
+            metadata = {
                 'description': repo.description or '',
                 'homepage': repo.homepage or '',
                 'topics': repo.get_topics(),
                 'private': repo.private,
-                'default_branch': repo.default_branch
+                'default_branch': repo.default_branch,
+
+                # Repository features
+                'has_issues': repo.has_issues,
+                'has_wiki': repo.has_wiki,
+                'has_projects': repo.has_projects,
+                'has_discussions': repo.has_discussions,
+
+                # Merge settings
+                'allow_squash_merge': repo.allow_squash_merge,
+                'allow_merge_commit': repo.allow_merge_commit,
+                'allow_rebase_merge': repo.allow_rebase_merge,
+                'allow_auto_merge': repo.allow_auto_merge,
+                'delete_branch_on_merge': repo.delete_branch_on_merge,
+                'allow_update_branch': repo.allow_update_branch if hasattr(repo, 'allow_update_branch') else None,
+
+                # Merge commit formats
+                'squash_merge_commit_title': repo.squash_merge_commit_title if hasattr(repo, 'squash_merge_commit_title') else None,
+                'squash_merge_commit_message': repo.squash_merge_commit_message if hasattr(repo, 'squash_merge_commit_message') else None,
+                'merge_commit_title': repo.merge_commit_title if hasattr(repo, 'merge_commit_title') else None,
+                'merge_commit_message': repo.merge_commit_message if hasattr(repo, 'merge_commit_message') else None,
+
+                # Other settings
+                'allow_forking': repo.allow_forking if hasattr(repo, 'allow_forking') else None,
+                'is_template': repo.is_template,
+                'archived': repo.archived,
+                'web_commit_signoff_required': repo.web_commit_signoff_required if hasattr(repo, 'web_commit_signoff_required') else None,
             }
+
+            # Get GitHub Actions settings
+            actions_settings = {}
+
+            # Get Actions permissions (enabled/disabled, allowed actions)
+            success, perms = self._get_repo_actions_permissions(org, repo_name)
+            if success and perms:
+                actions_settings['actions_permissions'] = perms
+
+                # If allowed_actions is 'selected', get the selected actions configuration
+                if perms.get('allowed_actions') == 'selected':
+                    success, selected = self._get_repo_actions_selected_actions(org, repo_name)
+                    if success and selected:
+                        actions_settings['selected_actions'] = selected
+
+            # Get workflow default permissions
+            success, workflow_perms = self._get_repo_workflow_permissions(org, repo_name)
+            if success and workflow_perms:
+                actions_settings['workflow_permissions'] = workflow_perms
+
+            # Get workflow access level (for private repos)
+            success, access_level = self._get_repo_workflow_access_level(org, repo_name)
+            if success and access_level:
+                actions_settings['workflow_access'] = access_level
+
+            # Add Actions settings if any were retrieved
+            if actions_settings:
+                metadata['actions_settings'] = actions_settings
+
+            self.logger.debug(f"Retrieved metadata for {org}/{repo_name}")
+            return metadata
+
         except GithubException as e:
             self.logger.error(f"Failed to get metadata for {org}/{repo_name}: {e}")
             return {}
 
     def _set_repo_metadata(self, org: str, repo_name: str, metadata: Dict) -> bool:
-        """Set repository metadata"""
+        """Set comprehensive repository metadata and settings"""
         if self.dry_run:
             self.logger.info(f"[DRY RUN] Would update metadata for {org}/{repo_name}")
             return True
 
+        settings_synced = {'success': [], 'failed': []}
+
         try:
             repo = self.github.get_repo(f"{org}/{repo_name}")
 
-            # Update basic metadata
-            repo.edit(
-                description=metadata.get('description', ''),
-                homepage=metadata.get('homepage', ''),
-                private=metadata.get('private', False)
-            )
+            # Prepare edit parameters (only include non-None values)
+            edit_params = {}
+
+            # Basic metadata
+            edit_params['description'] = metadata.get('description', '')
+            edit_params['homepage'] = metadata.get('homepage', '')
+            edit_params['private'] = metadata.get('private', False)
+
+            # Repository features
+            if 'has_issues' in metadata:
+                edit_params['has_issues'] = metadata['has_issues']
+            if 'has_wiki' in metadata:
+                edit_params['has_wiki'] = metadata['has_wiki']
+            if 'has_projects' in metadata:
+                edit_params['has_projects'] = metadata['has_projects']
+            if 'has_discussions' in metadata:
+                edit_params['has_discussions'] = metadata['has_discussions']
+
+            # Merge settings
+            if 'allow_squash_merge' in metadata:
+                edit_params['allow_squash_merge'] = metadata['allow_squash_merge']
+            if 'allow_merge_commit' in metadata:
+                edit_params['allow_merge_commit'] = metadata['allow_merge_commit']
+            if 'allow_rebase_merge' in metadata:
+                edit_params['allow_rebase_merge'] = metadata['allow_rebase_merge']
+            if 'allow_auto_merge' in metadata:
+                edit_params['allow_auto_merge'] = metadata['allow_auto_merge']
+            if 'delete_branch_on_merge' in metadata:
+                edit_params['delete_branch_on_merge'] = metadata['delete_branch_on_merge']
+            if metadata.get('allow_update_branch') is not None:
+                edit_params['allow_update_branch'] = metadata['allow_update_branch']
+
+            # Merge commit formats
+            if metadata.get('squash_merge_commit_title') is not None:
+                edit_params['squash_merge_commit_title'] = metadata['squash_merge_commit_title']
+            if metadata.get('squash_merge_commit_message') is not None:
+                edit_params['squash_merge_commit_message'] = metadata['squash_merge_commit_message']
+            if metadata.get('merge_commit_title') is not None:
+                edit_params['merge_commit_title'] = metadata['merge_commit_title']
+            if metadata.get('merge_commit_message') is not None:
+                edit_params['merge_commit_message'] = metadata['merge_commit_message']
+
+            # Other settings
+            if metadata.get('allow_forking') is not None:
+                edit_params['allow_forking'] = metadata['allow_forking']
+            if 'is_template' in metadata:
+                edit_params['is_template'] = metadata['is_template']
+            if 'archived' in metadata:
+                edit_params['archived'] = metadata['archived']
+            if metadata.get('web_commit_signoff_required') is not None:
+                edit_params['web_commit_signoff_required'] = metadata['web_commit_signoff_required']
+
+            # Apply all repository settings via edit()
+            try:
+                repo.edit(**edit_params)
+                settings_synced['success'].append('repository_settings')
+                self.logger.debug(f"Updated repository settings for {org}/{repo_name}")
+            except Exception as e:
+                settings_synced['failed'].append(f'repository_settings: {e}')
+                self.logger.warning(f"Failed to update some repository settings for {org}/{repo_name}: {e}")
 
             # Update topics
             if 'topics' in metadata and metadata['topics']:
-                repo.replace_topics(metadata['topics'])
+                try:
+                    repo.replace_topics(metadata['topics'])
+                    settings_synced['success'].append('topics')
+                except Exception as e:
+                    settings_synced['failed'].append(f'topics: {e}')
+                    self.logger.warning(f"Failed to update topics: {e}")
 
             # Update default branch (if different)
             if 'default_branch' in metadata:
@@ -189,38 +310,98 @@ class RepoSyncer:
                     try:
                         repo.get_branch(new_default)
                         repo.edit(default_branch=new_default)
+                        settings_synced['success'].append('default_branch')
                         self.logger.debug(f"Updated default branch to {new_default}")
                     except GithubException:
+                        settings_synced['failed'].append(f'default_branch: Branch {new_default} does not exist')
                         self.logger.warning(f"Branch {new_default} doesn't exist in target, "
                                           f"keeping default as {current_default}")
 
-            return True
+            # Sync GitHub Actions settings
+            if 'actions_settings' in metadata:
+                actions_settings = metadata['actions_settings']
+
+                # Sync Actions permissions (enabled/disabled, allowed actions)
+                if 'actions_permissions' in actions_settings:
+                    if self._set_repo_actions_permissions(org, repo_name, actions_settings['actions_permissions']):
+                        settings_synced['success'].append('actions_permissions')
+                    else:
+                        settings_synced['failed'].append('actions_permissions')
+
+                    # Sync selected actions (if allowed_actions is 'selected')
+                    if 'selected_actions' in actions_settings:
+                        if self._set_repo_actions_selected_actions(org, repo_name, actions_settings['selected_actions']):
+                            settings_synced['success'].append('selected_actions')
+                        else:
+                            settings_synced['failed'].append('selected_actions')
+
+                # Sync workflow permissions
+                if 'workflow_permissions' in actions_settings:
+                    if self._set_repo_workflow_permissions(org, repo_name, actions_settings['workflow_permissions']):
+                        settings_synced['success'].append('workflow_permissions')
+                    else:
+                        settings_synced['failed'].append('workflow_permissions')
+
+                # Sync workflow access level (for private repos)
+                if 'workflow_access' in actions_settings:
+                    if self._set_repo_workflow_access_level(org, repo_name, actions_settings['workflow_access']):
+                        settings_synced['success'].append('workflow_access')
+                    else:
+                        settings_synced['failed'].append('workflow_access')
+
+            # Log summary
+            total_success = len(settings_synced['success'])
+            total_failed = len(settings_synced['failed'])
+
+            if total_success > 0:
+                self.logger.info(f"Synced {total_success} setting group(s) for {org}/{repo_name}")
+                if self.verbose:
+                    self.logger.debug(f"  Synced: {', '.join(settings_synced['success'])}")
+
+            if total_failed > 0:
+                self.logger.warning(f"Failed to sync {total_failed} setting group(s) for {org}/{repo_name}")
+                if self.verbose:
+                    self.logger.debug(f"  Failed: {', '.join(settings_synced['failed'])}")
+
+            # Return True if at least basic settings succeeded
+            return 'repository_settings' in settings_synced['success']
+
         except GithubException as e:
             self.logger.error(f"Failed to set metadata for {org}/{repo_name}: {e}")
             return False
 
     def _create_repo(self, org: str, repo_name: str, metadata: Dict) -> bool:
-        """Create a new repository in the target organization"""
+        """Create a new repository in the target organization with all settings"""
         if self.dry_run:
             self.logger.info(f"[DRY RUN] Would create repository {org}/{repo_name}")
             return True
 
         try:
             org_obj = self.github.get_organization(org)
-            org_obj.create_repo(
-                name=repo_name,
-                description=metadata.get('description', ''),
-                homepage=metadata.get('homepage', ''),
-                private=metadata.get('private', False),
-                auto_init=False  # Don't create initial commit
-            )
 
+            # Prepare creation parameters
+            create_params = {
+                'name': repo_name,
+                'description': metadata.get('description', ''),
+                'homepage': metadata.get('homepage', ''),
+                'private': metadata.get('private', False),
+                'auto_init': False,  # Don't create initial commit
+            }
+
+            # Add feature flags that can be set during creation
+            if 'has_issues' in metadata:
+                create_params['has_issues'] = metadata['has_issues']
+            if 'has_wiki' in metadata:
+                create_params['has_wiki'] = metadata['has_wiki']
+            if 'has_projects' in metadata:
+                create_params['has_projects'] = metadata['has_projects']
+
+            org_obj.create_repo(**create_params)
             self.logger.info(f"Created repository {org}/{repo_name}")
 
-            # Set topics (can't be set during creation)
-            if 'topics' in metadata and metadata['topics']:
-                repo = self.github.get_repo(f"{org}/{repo_name}")
-                repo.replace_topics(metadata['topics'])
+            # Now apply all other settings via _set_repo_metadata
+            # This includes topics, merge settings, Actions settings, etc.
+            self._set_repo_metadata(org, repo_name, metadata)
 
             return True
         except GithubException as e:
@@ -587,6 +768,267 @@ class RepoSyncer:
         self.logger.info("="*70 + "\n")
 
         return {'warnings': warnings}
+
+    def _get_repo_actions_permissions(self, org: str, repo_name: str) -> Tuple[bool, Optional[Dict]]:
+        """
+        Get repository Actions permissions (enabled status and allowed actions policy).
+
+        Args:
+            org: Organization name
+            repo_name: Repository name
+
+        Returns:
+            Tuple of (success, settings_dict)
+            settings_dict contains: enabled, allowed_actions, sha_pinning_required
+        """
+        try:
+            headers, data = self.github._Github__requester.requestJsonAndCheck(
+                "GET",
+                f"/repos/{org}/{repo_name}/actions/permissions"
+            )
+            self.logger.debug(f"Repository {org}/{repo_name} Actions permissions: {data}")
+            return True, data
+        except GithubException as e:
+            if e.status == 404:
+                self.logger.debug(f"Actions not configured for {org}/{repo_name}")
+                return False, None
+            elif e.status == 403:
+                self.logger.debug(f"Insufficient permissions to read Actions settings for {org}/{repo_name}")
+                return False, None
+            else:
+                self.logger.warning(f"Failed to get Actions permissions for {org}/{repo_name}: {e}")
+                return False, None
+        except Exception as e:
+            self.logger.warning(f"Unexpected error getting Actions permissions: {e}")
+            return False, None
+
+    def _set_repo_actions_permissions(self, org: str, repo_name: str, settings: Dict) -> bool:
+        """
+        Set repository Actions permissions.
+
+        Args:
+            org: Organization name
+            repo_name: Repository name
+            settings: Dict with enabled, allowed_actions, sha_pinning_required
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if self.dry_run:
+            self.logger.info(f"[DRY RUN] Would set Actions permissions for {org}/{repo_name}: {settings}")
+            return True
+
+        try:
+            self.github._Github__requester.requestJsonAndCheck(
+                "PUT",
+                f"/repos/{org}/{repo_name}/actions/permissions",
+                input=settings
+            )
+            self.logger.debug(f"Set Actions permissions for {org}/{repo_name}")
+            return True
+        except GithubException as e:
+            if e.status == 403:
+                self.logger.warning(f"Insufficient permissions to set Actions settings for {org}/{repo_name}")
+            else:
+                self.logger.warning(f"Failed to set Actions permissions for {org}/{repo_name}: {e}")
+            return False
+        except Exception as e:
+            self.logger.warning(f"Unexpected error setting Actions permissions: {e}")
+            return False
+
+    def _get_repo_actions_selected_actions(self, org: str, repo_name: str) -> Tuple[bool, Optional[Dict]]:
+        """
+        Get repository selected actions configuration (only if allowed_actions='selected').
+
+        Args:
+            org: Organization name
+            repo_name: Repository name
+
+        Returns:
+            Tuple of (success, settings_dict)
+            settings_dict contains: github_owned_allowed, verified_allowed, patterns_allowed
+        """
+        try:
+            headers, data = self.github._Github__requester.requestJsonAndCheck(
+                "GET",
+                f"/repos/{org}/{repo_name}/actions/permissions/selected-actions"
+            )
+            self.logger.debug(f"Repository {org}/{repo_name} selected actions: {data}")
+            return True, data
+        except GithubException as e:
+            if e.status == 404:
+                self.logger.debug(f"Selected actions not configured for {org}/{repo_name}")
+                return False, None
+            else:
+                self.logger.debug(f"Failed to get selected actions for {org}/{repo_name}: {e}")
+                return False, None
+        except Exception as e:
+            self.logger.warning(f"Unexpected error getting selected actions: {e}")
+            return False, None
+
+    def _set_repo_actions_selected_actions(self, org: str, repo_name: str, settings: Dict) -> bool:
+        """
+        Set repository selected actions configuration.
+
+        Args:
+            org: Organization name
+            repo_name: Repository name
+            settings: Dict with github_owned_allowed, verified_allowed, patterns_allowed
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if self.dry_run:
+            self.logger.info(f"[DRY RUN] Would set selected actions for {org}/{repo_name}: {settings}")
+            return True
+
+        try:
+            self.github._Github__requester.requestJsonAndCheck(
+                "PUT",
+                f"/repos/{org}/{repo_name}/actions/permissions/selected-actions",
+                input=settings
+            )
+            self.logger.debug(f"Set selected actions for {org}/{repo_name}")
+            return True
+        except GithubException as e:
+            self.logger.warning(f"Failed to set selected actions for {org}/{repo_name}: {e}")
+            return False
+        except Exception as e:
+            self.logger.warning(f"Unexpected error setting selected actions: {e}")
+            return False
+
+    def _get_repo_workflow_permissions(self, org: str, repo_name: str) -> Tuple[bool, Optional[Dict]]:
+        """
+        Get repository default workflow permissions for GITHUB_TOKEN.
+
+        Args:
+            org: Organization name
+            repo_name: Repository name
+
+        Returns:
+            Tuple of (success, settings_dict)
+            settings_dict contains: default_workflow_permissions, can_approve_pull_request_reviews
+        """
+        try:
+            headers, data = self.github._Github__requester.requestJsonAndCheck(
+                "GET",
+                f"/repos/{org}/{repo_name}/actions/permissions/workflow"
+            )
+            self.logger.debug(f"Repository {org}/{repo_name} workflow permissions: {data}")
+            return True, data
+        except GithubException as e:
+            if e.status == 404:
+                self.logger.debug(f"Workflow permissions not configured for {org}/{repo_name}")
+                return False, None
+            else:
+                self.logger.debug(f"Failed to get workflow permissions for {org}/{repo_name}: {e}")
+                return False, None
+        except Exception as e:
+            self.logger.warning(f"Unexpected error getting workflow permissions: {e}")
+            return False, None
+
+    def _set_repo_workflow_permissions(self, org: str, repo_name: str, settings: Dict) -> bool:
+        """
+        Set repository default workflow permissions for GITHUB_TOKEN.
+
+        Args:
+            org: Organization name
+            repo_name: Repository name
+            settings: Dict with default_workflow_permissions, can_approve_pull_request_reviews
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if self.dry_run:
+            self.logger.info(f"[DRY RUN] Would set workflow permissions for {org}/{repo_name}: {settings}")
+            return True
+
+        try:
+            self.github._Github__requester.requestJsonAndCheck(
+                "PUT",
+                f"/repos/{org}/{repo_name}/actions/permissions/workflow",
+                input=settings
+            )
+            self.logger.debug(f"Set workflow permissions for {org}/{repo_name}")
+            return True
+        except GithubException as e:
+            self.logger.warning(f"Failed to set workflow permissions for {org}/{repo_name}: {e}")
+            return False
+        except Exception as e:
+            self.logger.warning(f"Unexpected error setting workflow permissions: {e}")
+            return False
+
+    def _get_repo_workflow_access_level(self, org: str, repo_name: str) -> Tuple[bool, Optional[Dict]]:
+        """
+        Get repository workflow access level (for private repos).
+
+        Args:
+            org: Organization name
+            repo_name: Repository name
+
+        Returns:
+            Tuple of (success, settings_dict)
+            settings_dict contains: access_level
+        """
+        try:
+            # First check if repo is private
+            repo = self.github.get_repo(f"{org}/{repo_name}")
+            if not repo.private:
+                self.logger.debug(f"Repository {org}/{repo_name} is public, skipping access level")
+                return True, {'access_level': 'public'}
+
+            headers, data = self.github._Github__requester.requestJsonAndCheck(
+                "GET",
+                f"/repos/{org}/{repo_name}/actions/permissions/access"
+            )
+            self.logger.debug(f"Repository {org}/{repo_name} workflow access level: {data}")
+            return True, data
+        except GithubException as e:
+            if e.status == 404:
+                self.logger.debug(f"Workflow access level not configured for {org}/{repo_name}")
+                return False, None
+            else:
+                self.logger.debug(f"Failed to get workflow access level for {org}/{repo_name}: {e}")
+                return False, None
+        except Exception as e:
+            self.logger.warning(f"Unexpected error getting workflow access level: {e}")
+            return False, None
+
+    def _set_repo_workflow_access_level(self, org: str, repo_name: str, settings: Dict) -> bool:
+        """
+        Set repository workflow access level (for private repos).
+
+        Args:
+            org: Organization name
+            repo_name: Repository name
+            settings: Dict with access_level
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if self.dry_run:
+            self.logger.info(f"[DRY RUN] Would set workflow access level for {org}/{repo_name}: {settings}")
+            return True
+
+        try:
+            # Skip if public repo
+            if settings.get('access_level') == 'public':
+                self.logger.debug(f"Repository {org}/{repo_name} is public, skipping access level")
+                return True
+
+            self.github._Github__requester.requestJsonAndCheck(
+                "PUT",
+                f"/repos/{org}/{repo_name}/actions/permissions/access",
+                input=settings
+            )
+            self.logger.debug(f"Set workflow access level for {org}/{repo_name}")
+            return True
+        except GithubException as e:
+            self.logger.warning(f"Failed to set workflow access level for {org}/{repo_name}: {e}")
+            return False
+        except Exception as e:
+            self.logger.warning(f"Unexpected error setting workflow access level: {e}")
+            return False
 
     def sync_repository(self, source_org: str, repo_name: str,
                        target_org: str) -> SyncResult:
