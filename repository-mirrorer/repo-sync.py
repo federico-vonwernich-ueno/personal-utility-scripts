@@ -7,6 +7,7 @@ Supports initial migration and incremental updates via fast-forward.
 """
 
 import argparse
+import json
 import logging
 import os
 import subprocess
