@@ -330,6 +330,264 @@ class RepoSyncer:
         else:
             return False, f"Failed to check ancestry: {stderr}"
 
+    def _check_org_actions_permissions(self, org: str) -> Tuple[bool, Optional[Dict], str]:
+        """
+        Check organization Actions permissions policy.
+
+        Args:
+            org: Organization name
+
+        Returns:
+            Tuple of (success, permissions_data, message)
+            permissions_data contains 'enabled_repositories' and 'allowed_actions'
+        """
+        try:
+            # Use PyGithub's requester to make API call
+            headers, data = self.github._Github__requester.requestJsonAndCheck(
+                "GET",
+                f"/orgs/{org}/actions/permissions"
+            )
+
+            self.logger.debug(f"Organization {org} Actions permissions: {data}")
+
+            return True, data, "Successfully retrieved Actions permissions"
+
+        except GithubException as e:
+            if e.status == 404:
+                return False, None, f"Organization {org} not found or Actions not enabled"
+            elif e.status == 403:
+                return False, None, f"Insufficient permissions to check {org} Actions settings (requires admin:org scope)"
+            else:
+                return False, None, f"Failed to check Actions permissions: {e.data.get('message', str(e))}"
+        except Exception as e:
+            return False, None, f"Unexpected error checking Actions permissions: {str(e)}"
+
+    def _check_org_allowed_actions(self, org: str) -> Tuple[bool, Optional[Dict], str]:
+        """
+        Check organization allowed actions and reusable workflows settings.
+        Only applicable when allowed_actions policy is 'selected'.
+
+        Args:
+            org: Organization name
+
+        Returns:
+            Tuple of (success, allowed_actions_data, message)
+            allowed_actions_data contains 'github_owned_allowed', 'verified_allowed', 'patterns_allowed'
+        """
+        try:
+            # Use PyGithub's requester to make API call
+            headers, data = self.github._Github__requester.requestJsonAndCheck(
+                "GET",
+                f"/orgs/{org}/actions/permissions/selected-actions"
+            )
+
+            self.logger.debug(f"Organization {org} allowed actions: {data}")
+
+            return True, data, "Successfully retrieved allowed actions settings"
+
+        except GithubException as e:
+            if e.status == 404:
+                return False, None, f"Selected actions not configured for {org}"
+            elif e.status == 403:
+                return False, None, f"Insufficient permissions to check {org} allowed actions"
+            else:
+                return False, None, f"Failed to check allowed actions: {e.data.get('message', str(e))}"
+        except Exception as e:
+            return False, None, f"Unexpected error checking allowed actions: {str(e)}"
+
+    def _check_repo_workflow_access(self, org: str, repo_name: str) -> Tuple[bool, Optional[str], str]:
+        """
+        Check repository workflow access settings for private repositories.
+        This determines if other repos in the org can use workflows from this repo.
+
+        Args:
+            org: Organization name
+            repo_name: Repository name
+
+        Returns:
+            Tuple of (success, access_level, message)
+            access_level can be 'none', 'organization', 'enterprise', 'user'
+        """
+        try:
+            repo = self.github.get_repo(f"{org}/{repo_name}")
+
+            # Only check access settings for private repositories
+            if not repo.private:
+                return True, "public", "Repository is public - workflows are accessible to all"
+
+            # Use PyGithub's requester to make API call
+            headers, data = self.github._Github__requester.requestJsonAndCheck(
+                "GET",
+                f"/repos/{org}/{repo_name}/actions/permissions/access"
+            )
+
+            access_level = data.get('access_level', 'unknown')
+            self.logger.debug(f"Repository {org}/{repo_name} workflow access: {access_level}")
+
+            return True, access_level, f"Workflow access level: {access_level}"
+
+        except GithubException as e:
+            if e.status == 404:
+                # Repo doesn't exist or endpoint not available
+                return False, None, f"Repository {org}/{repo_name} not found or access settings not configured"
+            elif e.status == 403:
+                return False, None, f"Insufficient permissions to check workflow access for {org}/{repo_name}"
+            else:
+                return False, None, f"Failed to check workflow access: {e.data.get('message', str(e))}"
+        except Exception as e:
+            return False, None, f"Unexpected error checking workflow access: {str(e)}"
+
+    def verify_workflow_permissions(self, source_org: str, target_orgs: List[str],
+                                   source_workflow_repo: Optional[str] = None) -> Dict[str, List[str]]:
+        """
+        Verify that organizations have compatible settings for reusable workflows.
+
+        Args:
+            source_org: Source organization containing the workflow repository
+            target_orgs: List of target organizations
+            source_workflow_repo: Name of the repository containing reusable workflows (optional)
+
+        Returns:
+            Dictionary with 'warnings' key containing list of warning messages
+        """
+        warnings = []
+
+        self.logger.info("\n" + "="*70)
+        self.logger.info("WORKFLOW PERMISSIONS VERIFICATION")
+        self.logger.info("="*70)
+
+        # Check source organization
+        self.logger.info(f"\nChecking source organization: {source_org}")
+        success, perms, msg = self._check_org_actions_permissions(source_org)
+
+        if not success:
+            warning = f"⚠️  Source org {source_org}: {msg}"
+            self.logger.warning(warning)
+            warnings.append(warning)
+        else:
+            enabled_repos = perms.get('enabled_repositories', 'unknown')
+            allowed_actions = perms.get('allowed_actions', 'unknown')
+
+            self.logger.info(f"  Enabled repositories: {enabled_repos}")
+            self.logger.info(f"  Allowed actions: {allowed_actions}")
+
+            # Check if actions are properly enabled
+            if enabled_repos not in ['all', 'selected']:
+                warning = (f"⚠️  Source org {source_org}: Enabled repositories is '{enabled_repos}'. "
+                          f"Should be 'all' or 'selected' to use Actions.")
+                self.logger.warning(warning)
+                warnings.append(warning)
+
+            # Check allowed actions policy
+            if allowed_actions == 'selected':
+                self.logger.info(f"  Checking selected actions configuration...")
+                success, allowed, msg = self._check_org_allowed_actions(source_org)
+
+                if success:
+                    github_owned = allowed.get('github_owned_allowed', False)
+                    verified = allowed.get('verified_allowed', False)
+                    patterns = allowed.get('patterns_allowed', [])
+
+                    self.logger.info(f"    GitHub-owned actions allowed: {github_owned}")
+                    self.logger.info(f"    Verified actions allowed: {verified}")
+                    self.logger.info(f"    Custom patterns: {patterns if patterns else 'None'}")
+
+                    # Check if organization workflows are likely allowed
+                    org_pattern_found = any(source_org in pattern for pattern in patterns) if patterns else False
+                    if not org_pattern_found and not github_owned:
+                        warning = (f"⚠️  Source org {source_org}: Selected actions policy may not include "
+                                  f"organization workflows. Consider adding pattern '{source_org}/*' "
+                                  f"or setting allowed_actions to 'all'.")
+                        self.logger.warning(warning)
+                        warnings.append(warning)
+
+        # Check source workflow repository access if specified
+        if source_workflow_repo:
+            self.logger.info(f"\nChecking source workflow repository: {source_org}/{source_workflow_repo}")
+            success, access_level, msg = self._check_repo_workflow_access(source_org, source_workflow_repo)
+
+            if not success:
+                warning = f"⚠️  Workflow repo {source_org}/{source_workflow_repo}: {msg}"
+                self.logger.warning(warning)
+                warnings.append(warning)
+            else:
+                self.logger.info(f"  {msg}")
+
+                # Check if access is properly configured for organization use
+                if access_level == 'none':
+                    warning = (f"⚠️  Workflow repo {source_org}/{source_workflow_repo}: "
+                              f"Access level is 'none'. Other repositories cannot use workflows from this repo. "
+                              f"Set access to 'organization' in repository Settings > Actions > General > Access.")
+                    self.logger.warning(warning)
+                    warnings.append(warning)
+                elif access_level in ['organization', 'enterprise']:
+                    self.logger.info(f"  ✓ Workflow repository is accessible within the organization")
+                elif access_level == 'public':
+                    self.logger.info(f"  ✓ Repository is public - workflows are accessible to all")
+
+        # Check target organizations
+        for target_org in target_orgs:
+            self.logger.info(f"\nChecking target organization: {target_org}")
+            success, perms, msg = self._check_org_actions_permissions(target_org)
+
+            if not success:
+                warning = f"⚠️  Target org {target_org}: {msg}"
+                self.logger.warning(warning)
+                warnings.append(warning)
+            else:
+                enabled_repos = perms.get('enabled_repositories', 'unknown')
+                allowed_actions = perms.get('allowed_actions', 'unknown')
+
+                self.logger.info(f"  Enabled repositories: {enabled_repos}")
+                self.logger.info(f"  Allowed actions: {allowed_actions}")
+
+                # Check if actions are properly enabled
+                if enabled_repos not in ['all', 'selected']:
+                    warning = (f"⚠️  Target org {target_org}: Enabled repositories is '{enabled_repos}'. "
+                              f"Should be 'all' or 'selected' to use Actions.")
+                    self.logger.warning(warning)
+                    warnings.append(warning)
+
+                # Check if reusable workflows can be used
+                if allowed_actions not in ['all', 'selected']:
+                    warning = (f"⚠️  Target org {target_org}: Allowed actions is '{allowed_actions}'. "
+                              f"Should be 'all' or 'selected' to use reusable workflows. "
+                              f"Update in organization Settings > Actions > General > Policies.")
+                    self.logger.warning(warning)
+                    warnings.append(warning)
+                elif allowed_actions == 'selected':
+                    # Check selected actions configuration
+                    success, allowed, msg = self._check_org_allowed_actions(target_org)
+
+                    if success:
+                        patterns = allowed.get('patterns_allowed', [])
+
+                        # For same-org workflows, check if org pattern exists
+                        if target_org == source_org:
+                            org_pattern_found = any(target_org in pattern for pattern in patterns) if patterns else False
+                            if not org_pattern_found:
+                                warning = (f"⚠️  Target org {target_org}: Selected actions policy should include "
+                                          f"pattern '{target_org}/*' to use organization workflows.")
+                                self.logger.warning(warning)
+                                warnings.append(warning)
+                            else:
+                                self.logger.info(f"  ✓ Organization pattern found in allowed actions")
+
+        # Summary
+        self.logger.info("\n" + "="*70)
+        if warnings:
+            self.logger.warning(f"VERIFICATION COMPLETE: {len(warnings)} warning(s) found")
+            self.logger.warning("\nRecommendations:")
+            self.logger.warning("  1. Ensure organizations have Actions enabled (Settings > Actions > General)")
+            self.logger.warning("  2. Set 'Allowed actions' to 'all' or configure 'selected' with appropriate patterns")
+            self.logger.warning("  3. For workflow source repos, set Access to 'organization' (Repo Settings > Actions > General)")
+            self.logger.warning("  4. See: https://docs.github.com/en/organizations/managing-organization-settings/disabling-or-limiting-github-actions-for-your-organization")
+        else:
+            self.logger.info("VERIFICATION COMPLETE: No issues found")
+        self.logger.info("="*70 + "\n")
+
+        return {'warnings': warnings}
+
     def sync_repository(self, source_org: str, repo_name: str,
                        target_org: str) -> SyncResult:
         """
@@ -469,6 +727,35 @@ class RepoSyncer:
         self.logger.info(f"Starting sync: {len(config.repositories)} repositories "
                         f"to {len(config.target_orgs)} target organizations "
                         f"({total_syncs} total operations)")
+
+        # Verify workflow permissions before syncing
+        # Try to detect if any repository contains workflows (look for common workflow repo names)
+        workflow_repo_candidates = [
+            'github-workflows', '.github', 'workflows', 'ci-workflows',
+            'shared-workflows', 'reusable-workflows'
+        ]
+        detected_workflow_repo = None
+        for repo in config.repositories:
+            repo_lower = repo.lower()
+            if any(candidate in repo_lower for candidate in workflow_repo_candidates):
+                detected_workflow_repo = repo
+                break
+
+        try:
+            verification_result = self.verify_workflow_permissions(
+                config.source_org,
+                config.target_orgs,
+                source_workflow_repo=detected_workflow_repo
+            )
+
+            # Log warnings but continue with sync
+            if verification_result.get('warnings'):
+                self.logger.warning(f"\n⚠️  {len(verification_result['warnings'])} permission warning(s) detected.")
+                self.logger.warning("Continuing with sync, but workflows may not function correctly.")
+                self.logger.warning("Review the warnings above and update organization/repository settings as needed.\n")
+        except Exception as e:
+            self.logger.warning(f"⚠️  Failed to verify workflow permissions: {e}")
+            self.logger.warning("Continuing with sync anyway...\n")
 
         # Send Slack start notification
         thread_ts = None
