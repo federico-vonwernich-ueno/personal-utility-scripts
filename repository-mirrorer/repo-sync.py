@@ -1479,11 +1479,17 @@ class RepoSyncer:
                 log_file_path=self.log_file_path
             )
             if slack_rc == 0:
-                self.logger.debug("[SLACK] Summary notification sent successfully")
-            elif slack_rc not in (2, 3, 4):
-                self.logger.debug(f"[SLACK] Summary notification failed with code {slack_rc}")
+                self.logger.info("✓ Slack notification sent successfully")
+            elif slack_rc == 2:
+                self.logger.info("⊘ Slack notification skipped: slack_sdk not installed")
+            elif slack_rc == 3:
+                self.logger.info("⊘ Slack notification skipped: SLACK_BOT_TOKEN not set")
+            elif slack_rc == 4:
+                self.logger.info("⊘ Slack notification skipped: SLACK_CHANNEL not set")
+            else:
+                self.logger.warning(f"⚠️  Slack notification failed with code {slack_rc}")
         except Exception as e:
-            self.logger.debug(f"[SLACK] Failed to send summary notification: {e}")
+            self.logger.warning(f"⚠️  Slack notification failed: {e}")
 
         return results
 
