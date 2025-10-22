@@ -17,7 +17,7 @@
       "type": "section",
       "text": {
         "type": "mrkdwn",
-        "text": "*Source:* <{{SOURCE_ORG_URL}}|{{SOURCE_ORG}}>\n*Target Organizations:* {{TARGET_ORGS}}"
+        "text": "*Source:* <{{SOURCE_ORG_URL}}|{{SOURCE_ORG}}>\n\n*Target Organizations:*\n{{TARGET_ORGS}}"
       }
     },
     {

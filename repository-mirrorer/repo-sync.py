@@ -1747,7 +1747,10 @@ def send_sync_summary_notification(
 
     # Build GitHub URLs and rich content
     source_org_url = f"https://github.com/{config.source_org}"
-    target_orgs = ", ".join(config.target_orgs)
+
+    # Build target orgs as bulleted list with links
+    target_orgs_items = [f"• <https://github.com/{org}|{org}>" for org in config.target_orgs]
+    target_orgs = "\n".join(target_orgs_items)
 
     # Build success list with links (limit to top 10)
     success_results = [r for r in results if r.status in ('created', 'updated')]
