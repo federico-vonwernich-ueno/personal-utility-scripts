@@ -1859,16 +1859,77 @@ def send_sync_summary_notification(
     skipped_list_str = "\n".join([f"{r.target_org}/{r.repo_name}: {r.message}"
                                   for r in results if r.status == 'skipped'][:10])
 
-    # Build template variables for the summary
+    # Build GitHub URLs and rich content
+    source_org_url = f"https://github.com/{config.source_org}"
     target_orgs = ", ".join(config.target_orgs)
+
+    # Build success list with links (limit to top 10)
+    success_results = [r for r in results if r.status in ('created', 'updated')]
+    if success_results:
+        success_list_items = []
+        for result in success_results[:10]:
+            source_url = f"https://github.com/{config.source_org}/{result.repo_name}"
+            target_url = f"https://github.com/{result.target_org}/{result.repo_name}"
+            status_icon = "✓" if result.status == 'created' else "↻"
+            success_list_items.append(
+                f"• <{source_url}|{result.repo_name}> → <{target_url}|{result.target_org}/{result.repo_name}> {status_icon}"
+            )
+        if len(success_results) > 10:
+            success_list_items.append(f"_... and {len(success_results) - 10} more_")
+        success_list = "\n".join(success_list_items)
+    else:
+        success_list = "_No successful syncs_"
+
+    # Build error section with links
+    if errors > 0:
+        error_items = []
+        for result in [r for r in results if r.status == 'error'][:10]:
+            target_url = f"https://github.com/{result.target_org}/{result.repo_name}"
+            error_items.append(f"• <{target_url}|{result.target_org}/{result.repo_name}>: _{result.message}_")
+        if errors > 10:
+            error_items.append(f"_... and {errors - 10} more errors_")
+        error_section = "*Errors:*\n" + "\n".join(error_items)
+    else:
+        error_section = " "  # Space to avoid empty block
+
+    # Build skipped section with links
+    if skipped > 0:
+        skipped_items = []
+        for result in [r for r in results if r.status == 'skipped'][:10]:
+            target_url = f"https://github.com/{result.target_org}/{result.repo_name}"
+            skipped_items.append(f"• <{target_url}|{result.target_org}/{result.repo_name}>: _{result.message}_")
+        if skipped > 10:
+            skipped_items.append(f"_... and {skipped - 10} more skipped_")
+        skipped_section = "*Skipped:*\n" + "\n".join(skipped_items)
+    else:
+        skipped_section = " "  # Space to avoid empty block
+
+    # Map status to icon
+    status_icons = {
+        'success': ':white_check_mark:',
+        'warning': ':warning:',
+        'failure': ':x:'
+    }
+    status_icon = status_icons.get(overall_status, ':information_source:')
+
+    # Build template variables for the summary
     template_vars = {
+        "TITLE": title,
+        "ICON": status_icon,
         "TOTAL_REPOS": str(len(config.repositories)),
-        "SUCCESS_COUNT": str(created + updated),
+        "CREATED_COUNT": str(created),
+        "UPDATED_COUNT": str(updated),
         "FAILED_COUNT": str(errors),
         "SKIPPED_COUNT": str(skipped),
+        "SOURCE_ORG": config.source_org,
+        "SOURCE_ORG_URL": source_org_url,
         "TARGET_ORGS": target_orgs,
         "DURATION": f"{int(duration_seconds // 60)}m {int(duration_seconds % 60)}s" if duration_seconds else "N/A",
-        "STATUS": overall_status.upper()
+        "STATUS": overall_status.upper(),
+        "STATUS_ICON": status_icon,
+        "SUCCESS_LIST": success_list,
+        "ERROR_SECTION": error_section,
+        "SKIPPED_SECTION": skipped_section
     }
 
     # Attach log file if provided
