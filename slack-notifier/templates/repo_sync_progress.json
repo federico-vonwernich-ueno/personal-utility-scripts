@@ -1,0 +1,55 @@
+{
+  "username": "Repository Sync",
+  "icon_emoji": "{{STATUS_ICON}}",
+  "blocks": [
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "{{STATUS_ICON}} *{{STATUS}}:* `{{REPO_NAME}}` → `{{TARGET_ORG}}`"
+      }
+    },
+    {
+      "type": "section",
+      "fields": [
+        {
+          "type": "mrkdwn",
+          "text": "*Source:*\n{{SOURCE_ORG}}/{{REPO_NAME}}"
+        },
+        {
+          "type": "mrkdwn",
+          "text": "*Target:*\n{{TARGET_ORG}}/{{REPO_NAME}}"
+        }
+      ]
+    },
+    {
+      "type": "section",
+      "fields": [
+        {
+          "type": "mrkdwn",
+          "text": "*Visibility:*\n{{VISIBILITY}}"
+        },
+        {
+          "type": "mrkdwn",
+          "text": "*Default Branch:*\n{{DEFAULT_BRANCH}}"
+        }
+      ]
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*Description:*\n{{DESCRIPTION}}"
+      }
+    },
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "mrkdwn",
+          "text": "{{MESSAGE}}"
+        }
+      ]
+    }
+  ]
+}

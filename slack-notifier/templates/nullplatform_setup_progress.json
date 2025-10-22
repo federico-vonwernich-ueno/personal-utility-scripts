@@ -1,0 +1,48 @@
+{
+  "username": "Nullplatform Setup",
+  "icon_emoji": "{{STATUS_ICON}}",
+  "blocks": [
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "{{STATUS_ICON}} *{{STATUS}}:* `{{RESOURCE_TYPE}}/{{RESOURCE_NAME}}`"
+      }
+    },
+    {
+      "type": "section",
+      "fields": [
+        {
+          "type": "mrkdwn",
+          "text": "*Resource Type:*\n{{RESOURCE_TYPE}}"
+        },
+        {
+          "type": "mrkdwn",
+          "text": "*Name:*\n{{RESOURCE_NAME}}"
+        }
+      ]
+    },
+    {
+      "type": "section",
+      "fields": [
+        {
+          "type": "mrkdwn",
+          "text": "*Status:*\n{{STATUS}}"
+        },
+        {
+          "type": "mrkdwn",
+          "text": "*Resource ID:*\n`{{RESOURCE_ID}}`"
+        }
+      ]
+    },
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "mrkdwn",
+          "text": "{{MESSAGE}}"
+        }
+      ]
+    }
+  ]
+}

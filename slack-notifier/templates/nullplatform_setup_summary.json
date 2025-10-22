@@ -1,0 +1,76 @@
+{
+  "username": "Nullplatform Setup",
+  "icon_emoji": "{{ICON}}",
+  "blocks": [
+    {
+      "type": "header",
+      "text": {
+        "type": "plain_text",
+        "text": "{{ICON}} Nullplatform Setup Complete",
+        "emoji": true
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*Summary Statistics*"
+      }
+    },
+    {
+      "type": "section",
+      "fields": [
+        {
+          "type": "mrkdwn",
+          "text": "*Total Resources:*\n{{TOTAL}}"
+        },
+        {
+          "type": "mrkdwn",
+          "text": "*Duration:*\n{{DURATION}}"
+        }
+      ]
+    },
+    {
+      "type": "section",
+      "fields": [
+        {
+          "type": "mrkdwn",
+          "text": "*Created:*\n:white_check_mark: {{CREATED}}"
+        },
+        {
+          "type": "mrkdwn",
+          "text": "*Already Exist:*\n:information_source: {{EXISTS}}"
+        }
+      ]
+    },
+    {
+      "type": "section",
+      "fields": [
+        {
+          "type": "mrkdwn",
+          "text": "*Errors:*\n:x: {{ERRORS}}"
+        },
+        {
+          "type": "mrkdwn",
+          "text": "*Status:*\n{{STATUS}}"
+        }
+      ]
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*Error Details:*\n```{{ERROR_LIST}}```"
+      }
+    },
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "mrkdwn",
+          "text": "Check thread for detailed progress | All resources processed"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,56 @@
+{
+  "username": "Repository Sync",
+  "icon_emoji": ":arrows_counterclockwise:",
+  "blocks": [
+    {
+      "type": "header",
+      "text": {
+        "type": "plain_text",
+        "text": "🔄 Repository Sync Starting",
+        "emoji": true
+      }
+    },
+    {
+      "type": "section",
+      "fields": [
+        {
+          "type": "mrkdwn",
+          "text": "*Source Organization:*\n{{SOURCE_ORG}}"
+        },
+        {
+          "type": "mrkdwn",
+          "text": "*Total Operations:*\n{{TOTAL_OPS}}"
+        }
+      ]
+    },
+    {
+      "type": "section",
+      "fields": [
+        {
+          "type": "mrkdwn",
+          "text": "*Repositories:*\n{{REPO_COUNT}}"
+        },
+        {
+          "type": "mrkdwn",
+          "text": "*Target Organizations:*\n{{TARGET_ORG_COUNT}}"
+        }
+      ]
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*Target Organizations:*\n{{TARGET_ORGS_LIST}}"
+      }
+    },
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "mrkdwn",
+          "text": "Status: *{{STATUS}}* | Progress updates will be posted in this thread"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,89 @@
+{
+  "username": "Repository Sync Bot",
+  "icon_emoji": "{{ICON}}",
+  "blocks": [
+    {
+      "type": "header",
+      "text": {
+        "type": "plain_text",
+        "text": "{{TITLE}}",
+        "emoji": true
+      }
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*Source:* <{{SOURCE_ORG_URL}}|{{SOURCE_ORG}}>\n*Target Organizations:* {{TARGET_ORGS}}"
+      }
+    },
+    {
+      "type": "section",
+      "fields": [
+        {
+          "type": "mrkdwn",
+          "text": "*Total Repos*\n{{TOTAL_REPOS}}"
+        },
+        {
+          "type": "mrkdwn",
+          "text": "*Duration*\n{{DURATION}}"
+        },
+        {
+          "type": "mrkdwn",
+          "text": "*✓ Created*\n{{CREATED_COUNT}}"
+        },
+        {
+          "type": "mrkdwn",
+          "text": "*↻ Updated*\n{{UPDATED_COUNT}}"
+        },
+        {
+          "type": "mrkdwn",
+          "text": "*⊘ Skipped*\n{{SKIPPED_COUNT}}"
+        },
+        {
+          "type": "mrkdwn",
+          "text": "*✗ Failed*\n{{FAILED_COUNT}}"
+        }
+      ]
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*Recent Successful Syncs:*\n{{SUCCESS_LIST}}"
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "{{ERROR_SECTION}}"
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "{{SKIPPED_SECTION}}"
+      }
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "mrkdwn",
+          "text": "{{STATUS_ICON}} Status: *{{STATUS}}* | Log file attached above"
+        }
+      ]
+    }
+  ]
+}
