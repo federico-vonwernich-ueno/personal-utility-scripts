@@ -232,7 +232,7 @@ class RepoSyncer:
             Exit codes: 0=success, 1=error, 2=missing deps, 3=no token, 4=no channel
         """
         # Locate slack_notifier_sdk.py script
-        script_dir = Path(__file__).parent.parent
+        script_dir = Path(__file__).parent
         slack_script = (script_dir / "slack-notifier" / "slack_notifier_sdk.py").resolve()
 
         # Validate configuration
@@ -287,7 +287,7 @@ class RepoSyncer:
             self.logger.debug(f"[SLACK] Failed to execute notifier: {e}")
             return (1, None)
 
-    def load_config(self, config_path: str) -> Config:
+    def load_config(self, config_path: str = 'repo-sync.yaml') -> Config:
         """Load and validate configuration from YAML file"""
         self._log_section("Configuration Loading")
         self.logger.info(f"Loading configuration from {config_path}")
@@ -1613,7 +1613,7 @@ def send_slack_notification(
         Tuple of (exit_code, thread_ts) where thread_ts is returned for new threads
     """
     # Locate notifier script
-    script_dir = Path(__file__).parent
+    script_dir = Path(__file__).parent.parent
     slack_script = (script_dir / "slack-notifier" / "slack_notifier_sdk.py").resolve()
 
     # Validate configuration
