@@ -733,7 +733,7 @@ def send_setup_start_notification(config: Config) -> Tuple[int, Optional[str]]:
         title,
         message,
         status="info",
-        template="nullplatform_setup_start",
+        template=str(Path(__file__).parent / "templates" / "nullplatform_setup_start.json"),
         template_vars={
             "TOTAL_RESOURCES": str(total_resources),
             "NAMESPACE_NAME": config.namespace.get('name') if config.namespace else "N/A",
@@ -787,7 +787,7 @@ def send_resource_notification(
         title,
         message,
         status=slack_status,
-        template="nullplatform_setup_progress",
+        template=str(Path(__file__).parent / "templates" / "nullplatform_setup_progress.json"),
         template_vars={
             "RESOURCE_TYPE": result.resource_type,
             "RESOURCE_NAME": result.resource_name,
@@ -886,7 +886,7 @@ def send_setup_summary_notification(
         title,
         message,
         status=overall_status,
-        template="nullplatform_setup_summary",
+        template=str(Path(__file__).parent / "templates" / "nullplatform_setup_summary.json"),
         template_vars={
             "TOTAL": str(total),
             "CREATED": str(created),

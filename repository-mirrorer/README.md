@@ -235,6 +235,13 @@ Setup:
 2. Configure environment variables (see [Slack Integration Guide](../docs/SLACK_INTEGRATION.md))
 3. Run script normally - notifications sent automatically
 
+### Custom Templates
+
+This script uses a custom Slack notification template located in `templates/`:
+- `repo_sync_summary.json` - Sync completion summary
+
+This template is automatically used when Slack notifications are enabled.
+
 ## Best Practices
 
 1. **Test with dry-run** before actual sync

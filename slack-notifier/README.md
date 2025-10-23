@@ -130,6 +130,24 @@ Located in `./templates/`:
 - `workflow_success.json` - Header, message, status context
 - `workflow_failure.json` - Same structure as success
 
+### Template Resolution
+
+Templates can be specified in two ways:
+
+**1. By name** (for built-in templates):
+```bash
+--template simple
+--template workflow_success
+```
+These are automatically resolved from `./templates/` directory.
+
+**2. By path** (for custom templates):
+```bash
+--template /path/to/custom_template.json
+--template ./my-templates/custom.json
+```
+Full or relative paths are used as-is.
+
 ### Built-in Variables
 
 | Variable | Source | Example |

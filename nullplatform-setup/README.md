@@ -250,6 +250,15 @@ Setup:
 2. Configure environment variables (see [Slack Integration Guide](../docs/SLACK_INTEGRATION.md))
 3. Run script normally - notifications sent automatically
 
+### Custom Templates
+
+This script uses custom Slack notification templates located in `templates/`:
+- `nullplatform_setup_start.json` - Setup start notification
+- `nullplatform_setup_progress.json` - Resource creation progress
+- `nullplatform_setup_summary.json` - Final summary
+
+These templates are automatically used when Slack notifications are enabled.
+
 ## Best Practices
 
 1. Use dry-run first: `--dry-run` before creating resources

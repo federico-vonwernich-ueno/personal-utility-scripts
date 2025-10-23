@@ -1828,7 +1828,7 @@ def send_sync_summary_notification(
         title,
         message,
         status=overall_status,
-        template="repo_sync_summary",
+        template=str(Path(__file__).parent / "templates" / "repo_sync_summary.json"),
         template_vars=template_vars,
         files=files
     )
