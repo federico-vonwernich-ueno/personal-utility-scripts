@@ -1,93 +1,101 @@
 # GitHub Workflow Monitor
 
-A Python script to continuously monitor GitHub workflow runs across multiple repositories and detect failures in real-time.
+Continuously monitor GitHub workflow runs across multiple repositories and detect failures in real-time.
 
-## Features
+## Overview
 
-- ✅ Continuous monitoring with configurable polling intervals
-- ✅ Single-check mode for one-time monitoring
-- ✅ Track multiple repositories and workflows
-- ✅ Filter by specific workflows and/or branches
-- ✅ Detect and report new failures with detailed information
-- ✅ State persistence to avoid duplicate alerts
-- ✅ Failed job details for each failure
-- ✅ Colored console output with timestamps
-- ✅ Configurable lookback window
-- ✅ Comprehensive error handling
+`monitor_workflows.py` tracks GitHub Actions workflow runs across multiple repositories, detects new failures, and reports them with detailed information. Unlike tools that *trigger* workflows, this script *monitors* existing workflow runs.
 
-## Prerequisites
+### Key Features
 
-- Python 3.6 or higher
-- GitHub CLI (`gh`) installed and authenticated
-- PyYAML library
+- Continuous monitoring with configurable polling intervals
+- Single-check mode for one-time monitoring (great for cron jobs)
+- Track multiple repositories and workflows
+- Filter by specific workflows and/or branches
+- Detect and report new failures with job details
+- State persistence to avoid duplicate alerts
+- Colored console output with timestamps
+- Configurable lookback window
+
+## Quick Start
+
+### Prerequisites
+
+- Python 3.6+
+- GitHub CLI (`gh`) - [Setup guide](../docs/GITHUB_SETUP.md)
+- PyYAML: `pip install PyYAML`
+
+See [Python Setup Guide](../docs/PYTHON_SETUP.md) for virtual environment setup.
 
 ### Installation
 
-1. Install GitHub CLI if not already installed:
-   ```bash
-   # macOS
-   brew install gh
-   
-   # Other platforms: https://cli.github.com/manual/installation
-   ```
+```bash
+# Install GitHub CLI
+brew install gh  # macOS
+# OR see: https://cli.github.com/manual/installation
 
-2. Authenticate with GitHub:
-   ```bash
-   gh auth login
-   ```
+# Authenticate
+gh auth login
 
-3. Install Python dependencies:
-   ```bash
-   pip install PyYAML
-   ```
+# Install Python dependencies
+pip install PyYAML
+```
+
+### Quick Test
+
+```bash
+# Check prerequisites
+./quickstart.sh
+
+# Run a single check
+python3 monitor_workflows.py test-config.yaml --once
+
+# Monitor continuously
+python3 monitor_workflows.py test-config.yaml
+```
 
 ## Configuration
 
-Create a YAML configuration file with the following structure:
+Create a YAML configuration file:
 
 ```yaml
 # Global settings
-poll_interval: 60           # Seconds between checks (for continuous mode)
+poll_interval: 60           # Seconds between checks (continuous mode)
 lookback_minutes: 60        # How far back to look for workflow runs
-max_runs_per_check: 100     # Maximum number of runs to check per repository
+max_runs_per_check: 100     # Max runs to check per repository
 
-# List of repositories to monitor
+# Repositories to monitor
 repositories:
   # Monitor all workflows on all branches
   - repository: "owner/repo-name"
-  
+
   # Monitor specific workflow
   - repository: "owner/another-repo"
     workflow: "ci.yml"
-  
+
   # Monitor specific workflow on specific branch
-  - repository: "https://github.com/myorg/myrepo"
+  - repository: "owner/myrepo"
     workflow: "deploy.yml"
     branch: "main"
-  
-  # Repository URL formats also supported
-  - repository: "git@github.com:myorg/api.git"
-    workflow: "test.yml"
-    branch: "develop"
 ```
 
-See `config.example.yaml` for a complete example.
+See `config.example.yaml` for detailed examples.
 
 ## Usage
 
 ### Continuous Monitoring
 
-Monitor continuously, checking for new failures at regular intervals:
+Monitor continuously, checking for failures at regular intervals:
 
 ```bash
 python monitor_workflows.py config.yaml
 ```
 
-The monitor will run indefinitely, checking for failures every `poll_interval` seconds. Press `Ctrl+C` to stop.
+Runs indefinitely, checking every `poll_interval` seconds. Press Ctrl+C to stop.
 
 ### Single Check
 
-Run a single check and exit (useful for cron jobs or CI/CD):
+Run once and exit (useful for cron jobs or CI/CD):
 
 ```bash
 python monitor_workflows.py config.yaml --once
@@ -99,135 +107,60 @@ Exit codes:
 
 ### Custom State File
 
-Use a custom location for the state file:
-
 ```bash
 python monitor_workflows.py config.yaml --state-file /tmp/my-state.json
 ```
 
-### Help
-
-```bash
-python monitor_workflows.py --help
-```
-
 ## How It Works
 
-1. **Configuration Loading**: Reads and validates the YAML configuration
-2. **State Management**: Loads previously seen workflow runs from state file
+1. **Configuration Loading**: Reads and validates YAML config
+2. **State Management**: Loads previously seen workflow runs
 3. **Polling Loop** (continuous mode):
-   - For each configured repository:
+   - For each repository:
      - Fetches recent workflow runs using GitHub CLI
-     - Filters runs within the lookback window
+     - Filters runs within lookback window
      - Checks for completed runs with failure status
      - Identifies new failures not seen before
      - Reports detailed failure information
    - Updates state file with newly seen runs
    - Waits for poll interval before next check
-4. **Failure Reporting**: When a new failure is detected:
+4. **Failure Reporting**: When detected:
    - Displays workflow details (name, branch, run ID, URL)
-   - Lists all failed jobs with their conclusions
-   - Marks the run as seen to avoid duplicate alerts
+   - Lists all failed jobs with conclusions
+   - Marks run as seen to avoid duplicate alerts
 
-## Configuration Options
-
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `poll_interval` | integer | No | 60 | Seconds between checks (continuous mode only) |
-| `lookback_minutes` | integer | No | 60 | How many minutes back to check for runs |
-| `max_runs_per_check` | integer | No | 100 | Maximum runs to fetch per repository |
-| `repositories` | array | Yes | - | List of repository configurations |
-| `repositories[].repository` | string | Yes | - | Repository in "owner/name" format or GitHub URL |
-| `repositories[].workflow` | string | No | - | Workflow file name to filter (e.g., "ci.yml") |
-| `repositories[].branch` | string | No | - | Branch name to filter |
-
-## Examples
-
-### Example 1: Monitor all workflows in a repository
-
-```yaml
-poll_interval: 30
-lookback_minutes: 30
-
-repositories:
-  - repository: "myorg/myrepo"
-```
-
-### Example 2: Monitor specific workflows across multiple repos
-
-```yaml
-poll_interval: 60
-lookback_minutes: 120
-
-repositories:
-  - repository: "myorg/frontend"
-    workflow: "deploy.yml"
-    branch: "production"
-  
-  - repository: "myorg/backend"
-    workflow: "ci.yml"
-    branch: "main"
-  
-  - repository: "myorg/api"
-    workflow: "integration-tests.yml"
-```
-
-### Example 3: Single check with cron
-
-Add to your crontab to check every 5 minutes:
-
-```bash
-*/5 * * * * cd /path/to/workflow-monitor && python monitor_workflows.py config.yaml --once >> monitor.log 2>&1
-```
-
-## Output
-
-The script provides colored, timestamped output:
-
-- 🔵 **Info** (Cyan): General information and progress
-- ✓ **Success** (Green): No failures detected
-- ⚠ **Warning** (Yellow): Non-critical issues
-- ✗ **Error** (Red): Failures detected
-
-### Example Output
+## Example Output
 
 ```
 Workflow Monitor Starting
 =========================
-[2024-10-03 14:30:15] ℹ Repositories to monitor: 3
-[2024-10-03 14:30:15] ℹ Poll interval: 60 seconds
-[2024-10-03 14:30:15] ℹ Lookback window: 60 minutes
-[2024-10-03 14:30:15] ℹ State file: .workflow-monitor-state.json
+[2024-10-23 14:30:15] ℹ Repositories to monitor: 3
+[2024-10-23 14:30:15] ℹ Poll interval: 60 seconds
+[2024-10-23 14:30:15] ℹ Lookback window: 60 minutes
 
-Check #1 - 2024-10-03 14:30:15
+Check #1 - 2024-10-23 14:30:15
 ==============================
 
 FAILURE DETECTED: myorg/myrepo
 ===============================
-[2024-10-03 14:30:20] ✗ Workflow: CI Pipeline
-[2024-10-03 14:30:20] ✗ Run ID: 12345
-[2024-10-03 14:30:20] ✗ Title: Fix authentication issue
-[2024-10-03 14:30:20] ✗ Branch: feature/auth-fix
-[2024-10-03 14:30:20] ✗ Conclusion: failure
-[2024-10-03 14:30:20] ✗ Event: push
-[2024-10-03 14:30:20] ✗ Created: 2024-10-03T14:15:30Z
-[2024-10-03 14:30:20] ✗ URL: https://github.com/myorg/myrepo/actions/runs/12345
-[2024-10-03 14:30:20] ✗ 
-Failed Jobs (2):
-[2024-10-03 14:30:20] ✗   - Build and Test (failure)
-[2024-10-03 14:30:20] ✗   - Lint Code (failure)
+[2024-10-23 14:30:20] ✗ Workflow: CI Pipeline
+[2024-10-23 14:30:20] ✗ Run ID: 12345
+[2024-10-23 14:30:20] ✗ Branch: feature/auth-fix
+[2024-10-23 14:30:20] ✗ URL: https://github.com/myorg/myrepo/actions/runs/12345
 
-[2024-10-03 14:30:25] ℹ Checked 15 workflow runs
-[2024-10-03 14:30:25] ✗ Found 1 new failures!
-[2024-10-03 14:30:25] ℹ Next check in 60 seconds...
+Failed Jobs (2):
+  - Build and Test (failure)
+  - Lint Code (failure)
+
+[2024-10-23 14:30:25] ✗ Found 1 new failures!
+[2024-10-23 14:30:25] ℹ Next check in 60 seconds...
 ```
 
-## State File
+## State Management
 
-The monitor maintains a state file (default: `.workflow-monitor-state.json`) to track which workflow runs have been seen. This prevents duplicate alerts for the same failure.
+The monitor maintains a state file (`.workflow-monitor-state.json`) to track seen workflow runs and prevent duplicate alerts.
 
-The state file is a JSON file with the following structure:
-
+Format:
 ```json
 {
   "owner/repo:ci.yml:main": [12345, 12346, 12347],
@@ -235,87 +168,91 @@ The state file is a JSON file with the following structure:
 }
 ```
 
-Each key is in the format `repository:workflow:branch`, and the value is a list of run IDs that have been seen.
-
-**Note**: Delete the state file if you want to re-alert on all failures within the lookback window.
-
-## Error Handling
-
-The script handles various error conditions gracefully:
-
-- GitHub CLI not installed or not authenticated
-- Invalid YAML configuration
-- Network timeouts and API errors
-- Missing or invalid repository names
-- GitHub API rate limits
+**Reset alerts**: Delete the state file to re-alert on all failures within lookback window.
 
 ## Use Cases
 
-### 1. Development Team Dashboard
-Run the monitor continuously on a dedicated machine or server to track workflow failures across all your repositories.
+### 1. Development Dashboard
+Run continuously on a server to track all workflow failures in real-time:
+```bash
+nohup python3 monitor_workflows.py config.yaml > monitor.log 2>&1 &
+```
 
-### 2. CI/CD Integration
-Use `--once` mode in a scheduled CI/CD job to check for failures and send notifications via your preferred alerting system.
+### 2. Cron Job for Alerts
+Check periodically and integrate with alerting:
+```bash
+# Add to crontab (every 5 minutes)
+*/5 * * * * cd /path/to/workflow-monitor && python3 monitor_workflows.py config.yaml --once
+```
 
-### 3. Post-Deployment Monitoring
-Monitor specific workflows on production branches to catch deployment failures immediately.
+### 3. Quality Gate
+Monitor critical workflows before deployments:
+```yaml
+repositories:
+  - repository: "myorg/prod-service"
+    workflow: "deploy.yml"
+    branch: "production"
+```
 
-### 4. Quality Gate
-Integrate into your development workflow to ensure critical workflows are passing before allowing merges.
+## Common Issues
 
-## Limitations
+### "No repositories found"
+- Verify repository name format: `owner/repo`
+- Check GitHub CLI authentication: `gh auth status`
 
-- Requires GitHub CLI authentication
-- Subject to GitHub API rate limits (monitor adjusts polling with exponential backoff)
-- Only detects failures for runs within the lookback window
-- Does not send external notifications (can be integrated with alerting tools)
+### No failures showing but I know there are some
+- Increase `lookback_minutes` in config
+- Delete state file to reset: `rm .workflow-monitor-state.json`
+- Verify `workflow` and `branch` filters
 
-## Integration with Alerting Systems
+### Getting rate limited
+- Increase `poll_interval` to check less frequently
+- Reduce `max_runs_per_check`
+- The monitor will automatically back off when rate limits are hit
 
-The monitor can be easily integrated with alerting systems:
+### State file growing too large
+Delete the state file and restart the monitor.
 
-### Slack/Discord/Teams
-Parse the output and send webhook notifications when failures are detected.
+For more troubleshooting, see [Contributing Guide](../CONTRIBUTING.md).
 
-### PagerDuty/OpsGenie
-Run with `--once` and trigger incidents based on exit code.
+## Integration with Alerting
 
-### Email
-Pipe output to an email command when failures occur.
-
-Example wrapper script for Slack:
+Example wrapper for Slack:
 
 ```bash
 #!/bin/bash
 output=$(python monitor_workflows.py config.yaml --once 2>&1)
 if [ $? -ne 0 ]; then
   curl -X POST -H 'Content-type: application/json' \
-    --data "{\"text\":\"Workflow Failures Detected:\n\`\`\`$output\`\`\`\"}" \
+    --data "{\"text\":\"Workflow Failures:\n\`\`\`$output\`\`\`\"}" \
     YOUR_SLACK_WEBHOOK_URL
 fi
 ```
 
-## Troubleshooting
+Can also integrate with PagerDuty, OpsGenie, email, etc.
 
-### "GitHub CLI is not authenticated"
-Run `gh auth login` to authenticate with GitHub.
+## Configuration Options
 
-### No failures detected but I know there are failures
-- Check the `lookback_minutes` setting - increase it to look further back
-- Verify the `workflow` and `branch` filters if specified
-- Delete the state file to reset seen runs
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `poll_interval` | integer | 60 | Seconds between checks (continuous mode) |
+| `lookback_minutes` | integer | 60 | How many minutes back to check |
+| `max_runs_per_check` | integer | 100 | Max runs to fetch per repository |
+| `repositories` | array | - | List of repository configurations |
+| `repositories[].repository` | string | - | Repository in "owner/name" format |
+| `repositories[].workflow` | string | - | Workflow file name filter (optional) |
+| `repositories[].branch` | string | - | Branch name filter (optional) |
 
-### Getting rate limited
-- Increase `poll_interval` to check less frequently
-- Reduce `max_runs_per_check` to fetch fewer runs
-- The monitor will automatically back off when rate limits are hit
+## Tips
 
-### State file growing too large
-The state file tracks all seen runs. To clean it up:
-1. Stop the monitor
-2. Delete the state file
-3. Restart the monitor
+1. **Start with --once**: Test your config before running continuously
+2. **Tune poll_interval**: Balance responsiveness vs API rate limits
+3. **Use lookback_minutes wisely**: Too small = miss failures, too large = more API calls
+4. **Monitor specific branches**: Focus on important branches to reduce noise
+5. **Integrate with alerts**: Pipe output to notification systems
 
-## License
+## Related Documentation
 
-This script is part of the core-architecture-gh-workflows repository.
+- [GitHub Setup Guide](../docs/GITHUB_SETUP.md) - GitHub CLI authentication
+- [Python Setup Guide](../docs/PYTHON_SETUP.md) - Python environment setup
+- [Contributing Guide](../CONTRIBUTING.md) - Common patterns and troubleshooting

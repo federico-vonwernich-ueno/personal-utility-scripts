@@ -1,0 +1,8 @@
+# Python dependencies for ghact-runner script
+
+# Required: Configuration file parsing
+PyYAML>=6.0
+
+# Optional dependencies for Slack notifications
+slack-sdk>=3.21.0
+urllib3>=2.0.0

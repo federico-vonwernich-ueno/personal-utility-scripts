@@ -68,14 +68,3 @@ echo ""
 echo "5. Use with cron (check every 5 minutes):"
 echo "   */5 * * * * cd $(pwd) && python3 monitor_workflows.py my-config.yaml --once"
 echo ""
-
-# Offer to run a test
-echo ""
-read -p "Would you like to run a single check with test-config.yaml? (y/n) " -n 1 -r
-echo
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    echo ""
-    echo "Running test check..."
-    echo "===================="
-    python3 monitor_workflows.py test-config.yaml --once
-fi
