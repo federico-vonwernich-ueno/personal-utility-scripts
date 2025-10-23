@@ -596,6 +596,56 @@ class RepoSyncer:
 
         return False, None
 
+    def _filter_excluded_keys(
+        self,
+        data: Dict,
+        org: str,
+        repo_name: str,
+        config: Config,
+        excluded_list: List[Tuple[str, str]]
+    ) -> Dict:
+        """
+        Recursively filter excluded keys from a dictionary.
+
+        Checks every key at any nesting level against exclusion rules and removes
+        keys that match. This enables granular exclusion of individual settings
+        regardless of where they appear in the structure.
+
+        Args:
+            data: Dictionary to filter
+            org: Organization name
+            repo_name: Repository name
+            config: Config with exclusion rules
+            excluded_list: List to append (key_name, reason) tuples for excluded keys
+
+        Returns:
+            Filtered dictionary with excluded keys removed
+        """
+        if not isinstance(data, dict):
+            return data
+
+        filtered = {}
+
+        for key, value in data.items():
+            # Check if this key should be excluded
+            should_exclude, reason = self._should_exclude_setting(org, repo_name, key, config)
+
+            if should_exclude:
+                excluded_list.append((key, reason))
+                self.logger.debug(f"Excluding key '{key}' for {org}/{repo_name}: {reason}")
+                continue
+
+            # If value is a dict, recursively filter it
+            if isinstance(value, dict):
+                filtered_value = self._filter_excluded_keys(value, org, repo_name, config, excluded_list)
+                # Only include if the filtered dict is not empty
+                if filtered_value:
+                    filtered[key] = filtered_value
+            else:
+                filtered[key] = value
+
+        return filtered
+
     def _get_repo_metadata(self, org: str, repo_name: str) -> Dict:
         """Get comprehensive repository metadata and settings"""
         try:
@@ -686,66 +736,57 @@ class RepoSyncer:
             # Prepare edit parameters (only include non-None values)
             edit_params = {}
 
-            # Helper function to add setting with exclusion check
-            def add_setting(setting_name: str, value, condition=True):
-                """Add a setting to edit_params if not excluded and condition is met"""
-                if not condition:
-                    return
-                should_exclude, reason = self._should_exclude_setting(org, repo_name, setting_name, config)
-                if should_exclude:
-                    settings_excluded.append((setting_name, reason))
-                    self.logger.debug(f"Excluding '{setting_name}' for {org}/{repo_name}: {reason}")
-                else:
-                    edit_params[setting_name] = value
-
-            # Basic metadata (always included, but check exclusions)
-            add_setting('description', metadata.get('description', ''))
-            add_setting('homepage', metadata.get('homepage', ''))
-            add_setting('private', metadata.get('private', False))
+            # Basic metadata
+            edit_params['description'] = metadata.get('description', '')
+            edit_params['homepage'] = metadata.get('homepage', '')
+            edit_params['private'] = metadata.get('private', False)
 
             # Repository features
             if 'has_issues' in metadata:
-                add_setting('has_issues', metadata['has_issues'])
+                edit_params['has_issues'] = metadata['has_issues']
             if 'has_wiki' in metadata:
-                add_setting('has_wiki', metadata['has_wiki'])
+                edit_params['has_wiki'] = metadata['has_wiki']
             if 'has_projects' in metadata:
-                add_setting('has_projects', metadata['has_projects'])
+                edit_params['has_projects'] = metadata['has_projects']
             if 'has_discussions' in metadata:
-                add_setting('has_discussions', metadata['has_discussions'])
+                edit_params['has_discussions'] = metadata['has_discussions']
 
             # Merge settings
             if 'allow_squash_merge' in metadata:
-                add_setting('allow_squash_merge', metadata['allow_squash_merge'])
+                edit_params['allow_squash_merge'] = metadata['allow_squash_merge']
             if 'allow_merge_commit' in metadata:
-                add_setting('allow_merge_commit', metadata['allow_merge_commit'])
+                edit_params['allow_merge_commit'] = metadata['allow_merge_commit']
             if 'allow_rebase_merge' in metadata:
-                add_setting('allow_rebase_merge', metadata['allow_rebase_merge'])
+                edit_params['allow_rebase_merge'] = metadata['allow_rebase_merge']
             if 'allow_auto_merge' in metadata:
-                add_setting('allow_auto_merge', metadata['allow_auto_merge'])
+                edit_params['allow_auto_merge'] = metadata['allow_auto_merge']
             if 'delete_branch_on_merge' in metadata:
-                add_setting('delete_branch_on_merge', metadata['delete_branch_on_merge'])
+                edit_params['delete_branch_on_merge'] = metadata['delete_branch_on_merge']
             if metadata.get('allow_update_branch') is not None:
-                add_setting('allow_update_branch', metadata['allow_update_branch'])
+                edit_params['allow_update_branch'] = metadata['allow_update_branch']
 
             # Merge commit formats
             if metadata.get('squash_merge_commit_title') is not None:
-                add_setting('squash_merge_commit_title', metadata['squash_merge_commit_title'])
+                edit_params['squash_merge_commit_title'] = metadata['squash_merge_commit_title']
             if metadata.get('squash_merge_commit_message') is not None:
-                add_setting('squash_merge_commit_message', metadata['squash_merge_commit_message'])
+                edit_params['squash_merge_commit_message'] = metadata['squash_merge_commit_message']
             if metadata.get('merge_commit_title') is not None:
-                add_setting('merge_commit_title', metadata['merge_commit_title'])
+                edit_params['merge_commit_title'] = metadata['merge_commit_title']
             if metadata.get('merge_commit_message') is not None:
-                add_setting('merge_commit_message', metadata['merge_commit_message'])
+                edit_params['merge_commit_message'] = metadata['merge_commit_message']
 
             # Other settings
             if metadata.get('allow_forking') is not None:
-                add_setting('allow_forking', metadata['allow_forking'])
+                edit_params['allow_forking'] = metadata['allow_forking']
             if 'is_template' in metadata:
-                add_setting('is_template', metadata['is_template'])
+                edit_params['is_template'] = metadata['is_template']
             if 'archived' in metadata:
-                add_setting('archived', metadata['archived'])
+                edit_params['archived'] = metadata['archived']
             if metadata.get('web_commit_signoff_required') is not None:
-                add_setting('web_commit_signoff_required', metadata['web_commit_signoff_required'])
+                edit_params['web_commit_signoff_required'] = metadata['web_commit_signoff_required']
+
+            # Apply exclusion filtering to all settings
+            edit_params = self._filter_excluded_keys(edit_params, org, repo_name, config, settings_excluded)
 
             # Apply all repository settings via edit()
             try:
@@ -795,51 +836,59 @@ class RepoSyncer:
 
                 # Sync Actions permissions (enabled/disabled, allowed actions)
                 if 'actions_permissions' in actions_settings:
-                    should_exclude, reason = self._should_exclude_setting(org, repo_name, 'actions_permissions', config)
-                    if should_exclude:
-                        settings_excluded.append(('actions_permissions', reason))
-                        self.logger.debug(f"Excluding 'actions_permissions' for {org}/{repo_name}: {reason}")
-                    else:
-                        if self._set_repo_actions_permissions(org, repo_name, actions_settings['actions_permissions']):
+                    filtered = self._filter_excluded_keys(
+                        actions_settings['actions_permissions'],
+                        org, repo_name, config, settings_excluded
+                    )
+                    if filtered:  # Only sync if there are settings left after filtering
+                        if self._set_repo_actions_permissions(org, repo_name, filtered):
                             settings_synced['success'].append('actions_permissions')
                         else:
                             settings_synced['failed'].append('actions_permissions')
+                    else:
+                        self.logger.debug(f"Skipping actions_permissions sync for {org}/{repo_name}: all keys excluded")
 
                     # Sync selected actions (if allowed_actions is 'selected')
                     if 'selected_actions' in actions_settings:
-                        should_exclude, reason = self._should_exclude_setting(org, repo_name, 'selected_actions', config)
-                        if should_exclude:
-                            settings_excluded.append(('selected_actions', reason))
-                            self.logger.debug(f"Excluding 'selected_actions' for {org}/{repo_name}: {reason}")
-                        else:
-                            if self._set_repo_actions_selected_actions(org, repo_name, actions_settings['selected_actions']):
+                        filtered = self._filter_excluded_keys(
+                            actions_settings['selected_actions'],
+                            org, repo_name, config, settings_excluded
+                        )
+                        if filtered:
+                            if self._set_repo_actions_selected_actions(org, repo_name, filtered):
                                 settings_synced['success'].append('selected_actions')
                             else:
                                 settings_synced['failed'].append('selected_actions')
+                        else:
+                            self.logger.debug(f"Skipping selected_actions sync for {org}/{repo_name}: all keys excluded")
 
                 # Sync workflow permissions
                 if 'workflow_permissions' in actions_settings:
-                    should_exclude, reason = self._should_exclude_setting(org, repo_name, 'workflow_permissions', config)
-                    if should_exclude:
-                        settings_excluded.append(('workflow_permissions', reason))
-                        self.logger.debug(f"Excluding 'workflow_permissions' for {org}/{repo_name}: {reason}")
-                    else:
-                        if self._set_repo_workflow_permissions(org, repo_name, actions_settings['workflow_permissions']):
+                    filtered = self._filter_excluded_keys(
+                        actions_settings['workflow_permissions'],
+                        org, repo_name, config, settings_excluded
+                    )
+                    if filtered:
+                        if self._set_repo_workflow_permissions(org, repo_name, filtered):
                             settings_synced['success'].append('workflow_permissions')
                         else:
                             settings_synced['failed'].append('workflow_permissions')
+                    else:
+                        self.logger.debug(f"Skipping workflow_permissions sync for {org}/{repo_name}: all keys excluded")
 
                 # Sync workflow access level (for private repos)
                 if 'workflow_access' in actions_settings:
-                    should_exclude, reason = self._should_exclude_setting(org, repo_name, 'workflow_access', config)
-                    if should_exclude:
-                        settings_excluded.append(('workflow_access', reason))
-                        self.logger.debug(f"Excluding 'workflow_access' for {org}/{repo_name}: {reason}")
-                    else:
-                        if self._set_repo_workflow_access_level(org, repo_name, actions_settings['workflow_access']):
+                    filtered = self._filter_excluded_keys(
+                        actions_settings['workflow_access'],
+                        org, repo_name, config, settings_excluded
+                    )
+                    if filtered:
+                        if self._set_repo_workflow_access_level(org, repo_name, filtered):
                             settings_synced['success'].append('workflow_access')
                         else:
                             settings_synced['failed'].append('workflow_access')
+                    else:
+                        self.logger.debug(f"Skipping workflow_access sync for {org}/{repo_name}: all keys excluded")
 
             # Log summary
             total_success = len(settings_synced['success'])

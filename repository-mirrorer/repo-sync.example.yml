@@ -61,6 +61,9 @@ repository_groups:
 # Control which repository settings should NOT be synced for specific
 # organizations, repositories, or combinations.
 #
+# IMPORTANT: Exclusions work at the KEY LEVEL - you specify the actual key
+# names from the GitHub API, and they are filtered out at any nesting level.
+#
 # Rules are evaluated in order of specificity (most to least specific):
 # 1. Combinations (org + repo)
 # 2. Per-organization
@@ -69,16 +72,20 @@ repository_groups:
 # 5. Per-repository-group
 # 6. Global
 #
-# Common settings you might want to exclude:
+# Common top-level settings you might want to exclude:
 #   Repository settings: description, homepage, private, archived, is_template
 #   Features: has_issues, has_wiki, has_projects, has_discussions
 #   Merge settings: allow_squash_merge, allow_merge_commit, allow_rebase_merge,
 #                   allow_auto_merge, delete_branch_on_merge, allow_update_branch
 #   Merge formats: squash_merge_commit_title, squash_merge_commit_message,
 #                  merge_commit_title, merge_commit_message
-#   Actions/Workflow settings: actions_permissions, selected_actions,
-#                              workflow_permissions, workflow_access
 #   Other: allow_forking, web_commit_signoff_required
+#
+# Common nested settings (within Actions/workflow settings):
+#   From actions_permissions: enabled, allowed_actions
+#   From selected_actions: github_owned_allowed, verified_allowed, patterns_allowed
+#   From workflow_permissions: default_workflow_permissions, can_approve_pull_request_reviews
+#   From workflow_access: access_level
 
 exclusions:
   # --------------------------------------------------------------------------
@@ -105,11 +112,14 @@ exclusions:
     #   - squash_merge_commit_title
 
     # Example: target-org-3 manages its own Actions/workflow policies
+    # Exclude individual keys within workflow settings for granular control
     # target-org-3:
-    #   - actions_permissions   # Controls if Actions enabled, which actions allowed (all/local/selected)
-    #   - selected_actions      # Controls specific allowed actions (GitHub-owned, verified, patterns)
-    #   - workflow_permissions  # Controls default GITHUB_TOKEN permissions (read/write)
-    #   - workflow_access       # Controls if workflows can be reused by other repos (none/org/enterprise)
+    #   - default_workflow_permissions      # Don't sync GITHUB_TOKEN permissions (read/write)
+    #   - can_approve_pull_request_reviews  # Don't sync PR approval permission
+    #   - enabled                           # Don't enable/disable Actions
+    #   - allowed_actions                   # Don't change which actions are allowed
+    #   - github_owned_allowed              # Don't change GitHub-owned actions policy
+    #   - access_level                      # Don't change workflow reusability
 
   # --------------------------------------------------------------------------
   # Per-organization-group exclusions
@@ -197,19 +207,27 @@ exclusions:
 #       - allow_forking
 #       - has_discussions
 #
-# Example 5: Don't sync Actions/workflow settings (org manages its own)
+# Example 5: Exclude specific workflow permission keys (granular control)
 # Add to exclusions.organizations:
 #   your-org-name:
-#     - actions_permissions     # Don't change Actions enabled/disabled state
-#     - workflow_permissions    # Don't override GITHUB_TOKEN permissions
-#     - workflow_access         # Don't change workflow reusability settings
+#     - default_workflow_permissions      # Don't sync GITHUB_TOKEN read/write permissions
+#     - can_approve_pull_request_reviews  # Keep existing PR approval settings
 #
 # Example 6: Keep strict workflow permissions in production repos
 # Add to exclusions.repository_groups:
 #   production:
-#     - workflow_permissions    # Production uses read-only tokens
+#     - default_workflow_permissions    # Production uses read-only tokens, don't change
 #
-# Example 7: Globally exclude Actions policy sync (let each org manage)
+# Example 7: Globally exclude specific Actions keys (let each org manage)
 # Add to exclusions.global:
-#   - actions_permissions
-#   - selected_actions
+#   - enabled                    # Don't enable/disable Actions
+#   - allowed_actions            # Don't change which actions are allowed
+#   - github_owned_allowed       # Don't change GitHub-owned actions policy
+#
+# Example 8: Mix top-level and nested exclusions
+# Add to exclusions.organizations:
+#   your-org-name:
+#     - allow_forking                     # Top-level: org doesn't allow forking
+#     - has_wiki                          # Top-level: keep existing wiki setting
+#     - default_workflow_permissions      # Nested: keep GITHUB_TOKEN permissions
+#     - patterns_allowed                  # Nested: keep custom action patterns
