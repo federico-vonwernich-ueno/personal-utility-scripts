@@ -45,11 +45,25 @@ class SyncResult:
 
 
 @dataclass
+class ExclusionRules:
+    """Configuration for settings exclusions"""
+    global_exclusions: List[str]
+    org_exclusions: Dict[str, List[str]]
+    org_group_exclusions: Dict[str, List[str]]
+    repo_exclusions: Dict[str, List[str]]
+    repo_group_exclusions: Dict[str, List[str]]
+    combination_exclusions: List[Dict[str, any]]  # List of {organization, repository, settings}
+
+
+@dataclass
 class Config:
     """Configuration for repository sync"""
     source_org: str
     target_orgs: List[str]
     repositories: List[str]
+    organization_groups: Dict[str, List[str]] = None
+    repository_groups: Dict[str, List[str]] = None
+    exclusions: ExclusionRules = None
 
 
 class RepoSyncer:
@@ -314,16 +328,166 @@ class RepoSyncer:
             self.logger.error("'repositories' must be a list")
             sys.exit(1)
 
+        # Load optional groups
+        organization_groups = data.get('organization_groups', {})
+        repository_groups = data.get('repository_groups', {})
+
+        # Load and parse exclusion rules
+        exclusions = None
+        if 'exclusions' in data:
+            exclusions = self._parse_exclusion_rules(
+                data['exclusions'],
+                data['target_orgs'],
+                data['repositories'],
+                organization_groups,
+                repository_groups
+            )
+
         config = Config(
             source_org=data['source_org'],
             target_orgs=data['target_orgs'],
-            repositories=data['repositories']
+            repositories=data['repositories'],
+            organization_groups=organization_groups,
+            repository_groups=repository_groups,
+            exclusions=exclusions
         )
 
         self.logger.info(f"Config loaded: {len(config.repositories)} repos, "
                         f"{len(config.target_orgs)} target orgs")
 
+        if exclusions:
+            total_rules = (
+                len(exclusions.global_exclusions) +
+                len(exclusions.org_exclusions) +
+                len(exclusions.org_group_exclusions) +
+                len(exclusions.repo_exclusions) +
+                len(exclusions.repo_group_exclusions) +
+                len(exclusions.combination_exclusions)
+            )
+            self.logger.info(f"Loaded {total_rules} exclusion rule(s)")
+
         return config
+
+    def _parse_exclusion_rules(
+        self,
+        exclusions_data: Dict,
+        target_orgs: List[str],
+        repositories: List[str],
+        organization_groups: Dict[str, List[str]],
+        repository_groups: Dict[str, List[str]]
+    ) -> ExclusionRules:
+        """
+        Parse and validate exclusion rules from configuration.
+
+        Args:
+            exclusions_data: Exclusions section from config
+            target_orgs: List of target organizations
+            repositories: List of repositories
+            organization_groups: Org groups mapping
+            repository_groups: Repo groups mapping
+
+        Returns:
+            ExclusionRules object
+        """
+        # Parse global exclusions
+        global_exclusions = exclusions_data.get('global', [])
+        if not isinstance(global_exclusions, list):
+            self.logger.error("'exclusions.global' must be a list")
+            sys.exit(1)
+
+        # Parse per-organization exclusions
+        org_exclusions = {}
+        if 'organizations' in exclusions_data:
+            org_data = exclusions_data['organizations']
+            if not isinstance(org_data, dict):
+                self.logger.error("'exclusions.organizations' must be a dictionary")
+                sys.exit(1)
+            for org, settings in org_data.items():
+                if org not in target_orgs:
+                    self.logger.warning(f"Exclusion rule references unknown organization: {org}")
+                if not isinstance(settings, list):
+                    self.logger.error(f"Settings for organization '{org}' must be a list")
+                    sys.exit(1)
+                org_exclusions[org] = settings
+
+        # Parse per-organization-group exclusions
+        org_group_exclusions = {}
+        if 'organization_groups' in exclusions_data:
+            org_group_data = exclusions_data['organization_groups']
+            if not isinstance(org_group_data, dict):
+                self.logger.error("'exclusions.organization_groups' must be a dictionary")
+                sys.exit(1)
+            for group, settings in org_group_data.items():
+                if group not in organization_groups:
+                    self.logger.error(f"Exclusion rule references undefined organization group: {group}")
+                    sys.exit(1)
+                if not isinstance(settings, list):
+                    self.logger.error(f"Settings for organization group '{group}' must be a list")
+                    sys.exit(1)
+                org_group_exclusions[group] = settings
+
+        # Parse per-repository exclusions
+        repo_exclusions = {}
+        if 'repositories' in exclusions_data:
+            repo_data = exclusions_data['repositories']
+            if not isinstance(repo_data, dict):
+                self.logger.error("'exclusions.repositories' must be a dictionary")
+                sys.exit(1)
+            for repo, settings in repo_data.items():
+                if repo not in repositories:
+                    self.logger.warning(f"Exclusion rule references unknown repository: {repo}")
+                if not isinstance(settings, list):
+                    self.logger.error(f"Settings for repository '{repo}' must be a list")
+                    sys.exit(1)
+                repo_exclusions[repo] = settings
+
+        # Parse per-repository-group exclusions
+        repo_group_exclusions = {}
+        if 'repository_groups' in exclusions_data:
+            repo_group_data = exclusions_data['repository_groups']
+            if not isinstance(repo_group_data, dict):
+                self.logger.error("'exclusions.repository_groups' must be a dictionary")
+                sys.exit(1)
+            for group, settings in repo_group_data.items():
+                if group not in repository_groups:
+                    self.logger.error(f"Exclusion rule references undefined repository group: {group}")
+                    sys.exit(1)
+                if not isinstance(settings, list):
+                    self.logger.error(f"Settings for repository group '{group}' must be a list")
+                    sys.exit(1)
+                repo_group_exclusions[group] = settings
+
+        # Parse combination exclusions
+        combination_exclusions = []
+        if 'combinations' in exclusions_data:
+            combo_data = exclusions_data['combinations']
+            if not isinstance(combo_data, list):
+                self.logger.error("'exclusions.combinations' must be a list")
+                sys.exit(1)
+            for combo in combo_data:
+                if not isinstance(combo, dict):
+                    self.logger.error("Each combination must be a dictionary with 'organization', 'repository', and 'settings'")
+                    sys.exit(1)
+                if 'organization' not in combo or 'repository' not in combo or 'settings' not in combo:
+                    self.logger.error("Each combination must have 'organization', 'repository', and 'settings' fields")
+                    sys.exit(1)
+                if combo['organization'] not in target_orgs:
+                    self.logger.warning(f"Combination references unknown organization: {combo['organization']}")
+                if combo['repository'] not in repositories:
+                    self.logger.warning(f"Combination references unknown repository: {combo['repository']}")
+                if not isinstance(combo['settings'], list):
+                    self.logger.error("Combination 'settings' must be a list")
+                    sys.exit(1)
+                combination_exclusions.append(combo)
+
+        return ExclusionRules(
+            global_exclusions=global_exclusions,
+            org_exclusions=org_exclusions,
+            org_group_exclusions=org_group_exclusions,
+            repo_exclusions=repo_exclusions,
+            repo_group_exclusions=repo_group_exclusions,
+            combination_exclusions=combination_exclusions
+        )
 
     def _run_command(self, cmd: List[str], cwd: Optional[str] = None) -> Tuple[int, str, str]:
         """Run a shell command and return (returncode, stdout, stderr)"""
@@ -362,6 +526,75 @@ class RepoSyncer:
             if e.status == 404:
                 return False
             raise
+
+    def _should_exclude_setting(
+        self,
+        org: str,
+        repo_name: str,
+        setting_name: str,
+        config: Config
+    ) -> Tuple[bool, Optional[str]]:
+        """
+        Check if a setting should be excluded for the given org/repo combination.
+
+        Checks exclusion rules in order of specificity:
+        1. Combination (most specific)
+        2. Per-organization
+        3. Per-organization-group
+        4. Per-repository
+        5. Per-repository-group
+        6. Global (least specific)
+
+        Args:
+            org: Target organization name
+            repo_name: Repository name
+            setting_name: Name of the setting to check
+            config: Configuration object with exclusion rules
+
+        Returns:
+            Tuple of (should_exclude: bool, reason: str)
+        """
+        if not config.exclusions:
+            return False, None
+
+        exclusions = config.exclusions
+
+        # Check combination exclusions (most specific)
+        for combo in exclusions.combination_exclusions:
+            if (combo['organization'] == org and
+                combo['repository'] == repo_name and
+                setting_name in combo['settings']):
+                return True, f"combination rule for {org}/{repo_name}"
+
+        # Check per-organization exclusions
+        if org in exclusions.org_exclusions:
+            if setting_name in exclusions.org_exclusions[org]:
+                return True, f"organization rule for {org}"
+
+        # Check per-organization-group exclusions
+        if config.organization_groups:
+            for group_name, group_orgs in config.organization_groups.items():
+                if org in group_orgs and group_name in exclusions.org_group_exclusions:
+                    if setting_name in exclusions.org_group_exclusions[group_name]:
+                        return True, f"organization group '{group_name}'"
+
+        # Check per-repository exclusions
+        if repo_name in exclusions.repo_exclusions:
+            if setting_name in exclusions.repo_exclusions[repo_name]:
+                return True, f"repository rule for {repo_name}"
+
+        # Check per-repository-group exclusions
+        if config.repository_groups:
+            for group_name, group_repos in config.repository_groups.items():
+                if repo_name in group_repos and group_name in exclusions.repo_group_exclusions:
+                    if setting_name in exclusions.repo_group_exclusions[group_name]:
+                        return True, f"repository group '{group_name}'"
+
+        # Check global exclusions (least specific)
+        if setting_name in exclusions.global_exclusions:
+            return True, "global rule"
+
+        return False, None
 
     def _get_repo_metadata(self, org: str, repo_name: str) -> Dict:
         """Get comprehensive repository metadata and settings"""
@@ -438,13 +671,14 @@ class RepoSyncer:
             self.logger.error(f"Failed to get metadata for {org}/{repo_name}: {e}")
             return {}
 
-    def _set_repo_metadata(self, org: str, repo_name: str, metadata: Dict) -> bool:
+    def _set_repo_metadata(self, org: str, repo_name: str, metadata: Dict, config: Config) -> bool:
         """Set comprehensive repository metadata and settings"""
         if self.dry_run:
             self.logger.info(f"[DRY RUN] Would update metadata for {org}/{repo_name}")
             return True
 
         settings_synced = {'success': [], 'failed': []}
+        settings_excluded = []
 
         try:
             repo = self.github.get_repo(f"{org}/{repo_name}")
@@ -452,54 +686,66 @@ class RepoSyncer:
             # Prepare edit parameters (only include non-None values)
             edit_params = {}
 
-            # Basic metadata
-            edit_params['description'] = metadata.get('description', '')
-            edit_params['homepage'] = metadata.get('homepage', '')
-            edit_params['private'] = metadata.get('private', False)
+            # Helper function to add setting with exclusion check
+            def add_setting(setting_name: str, value, condition=True):
+                """Add a setting to edit_params if not excluded and condition is met"""
+                if not condition:
+                    return
+                should_exclude, reason = self._should_exclude_setting(org, repo_name, setting_name, config)
+                if should_exclude:
+                    settings_excluded.append((setting_name, reason))
+                    self.logger.debug(f"Excluding '{setting_name}' for {org}/{repo_name}: {reason}")
+                else:
+                    edit_params[setting_name] = value
+
+            # Basic metadata (always included, but check exclusions)
+            add_setting('description', metadata.get('description', ''))
+            add_setting('homepage', metadata.get('homepage', ''))
+            add_setting('private', metadata.get('private', False))
 
             # Repository features
             if 'has_issues' in metadata:
-                edit_params['has_issues'] = metadata['has_issues']
+                add_setting('has_issues', metadata['has_issues'])
             if 'has_wiki' in metadata:
-                edit_params['has_wiki'] = metadata['has_wiki']
+                add_setting('has_wiki', metadata['has_wiki'])
             if 'has_projects' in metadata:
-                edit_params['has_projects'] = metadata['has_projects']
+                add_setting('has_projects', metadata['has_projects'])
             if 'has_discussions' in metadata:
-                edit_params['has_discussions'] = metadata['has_discussions']
+                add_setting('has_discussions', metadata['has_discussions'])
 
             # Merge settings
             if 'allow_squash_merge' in metadata:
-                edit_params['allow_squash_merge'] = metadata['allow_squash_merge']
+                add_setting('allow_squash_merge', metadata['allow_squash_merge'])
             if 'allow_merge_commit' in metadata:
-                edit_params['allow_merge_commit'] = metadata['allow_merge_commit']
+                add_setting('allow_merge_commit', metadata['allow_merge_commit'])
             if 'allow_rebase_merge' in metadata:
-                edit_params['allow_rebase_merge'] = metadata['allow_rebase_merge']
+                add_setting('allow_rebase_merge', metadata['allow_rebase_merge'])
             if 'allow_auto_merge' in metadata:
-                edit_params['allow_auto_merge'] = metadata['allow_auto_merge']
+                add_setting('allow_auto_merge', metadata['allow_auto_merge'])
             if 'delete_branch_on_merge' in metadata:
-                edit_params['delete_branch_on_merge'] = metadata['delete_branch_on_merge']
+                add_setting('delete_branch_on_merge', metadata['delete_branch_on_merge'])
             if metadata.get('allow_update_branch') is not None:
-                edit_params['allow_update_branch'] = metadata['allow_update_branch']
+                add_setting('allow_update_branch', metadata['allow_update_branch'])
 
             # Merge commit formats
             if metadata.get('squash_merge_commit_title') is not None:
-                edit_params['squash_merge_commit_title'] = metadata['squash_merge_commit_title']
+                add_setting('squash_merge_commit_title', metadata['squash_merge_commit_title'])
             if metadata.get('squash_merge_commit_message') is not None:
-                edit_params['squash_merge_commit_message'] = metadata['squash_merge_commit_message']
+                add_setting('squash_merge_commit_message', metadata['squash_merge_commit_message'])
             if metadata.get('merge_commit_title') is not None:
-                edit_params['merge_commit_title'] = metadata['merge_commit_title']
+                add_setting('merge_commit_title', metadata['merge_commit_title'])
             if metadata.get('merge_commit_message') is not None:
-                edit_params['merge_commit_message'] = metadata['merge_commit_message']
+                add_setting('merge_commit_message', metadata['merge_commit_message'])
 
             # Other settings
             if metadata.get('allow_forking') is not None:
-                edit_params['allow_forking'] = metadata['allow_forking']
+                add_setting('allow_forking', metadata['allow_forking'])
             if 'is_template' in metadata:
-                edit_params['is_template'] = metadata['is_template']
+                add_setting('is_template', metadata['is_template'])
             if 'archived' in metadata:
-                edit_params['archived'] = metadata['archived']
+                add_setting('archived', metadata['archived'])
             if metadata.get('web_commit_signoff_required') is not None:
-                edit_params['web_commit_signoff_required'] = metadata['web_commit_signoff_required']
+                add_setting('web_commit_signoff_required', metadata['web_commit_signoff_required'])
 
             # Apply all repository settings via edit()
             try:
@@ -578,6 +824,7 @@ class RepoSyncer:
             # Log summary
             total_success = len(settings_synced['success'])
             total_failed = len(settings_synced['failed'])
+            total_excluded = len(settings_excluded)
 
             if total_success > 0:
                 self.logger.info(f"Synced {total_success} setting group(s) for {org}/{repo_name}")
@@ -589,6 +836,12 @@ class RepoSyncer:
                 if self.verbose:
                     self.logger.debug(f"  Failed: {', '.join(settings_synced['failed'])}")
 
+            if total_excluded > 0:
+                excluded_settings_list = [f"{name} ({reason})" for name, reason in settings_excluded]
+                self.logger.info(f"Excluded {total_excluded} setting(s) for {org}/{repo_name}")
+                if self.verbose:
+                    self.logger.debug(f"  Excluded: {', '.join(excluded_settings_list)}")
+
             # Return True if at least basic settings succeeded
             return 'repository_settings' in settings_synced['success']
 
@@ -596,7 +849,7 @@ class RepoSyncer:
             self.logger.error(f"Failed to set metadata for {org}/{repo_name}: {e}")
             return False
 
-    def _create_repo(self, org: str, repo_name: str, metadata: Dict) -> bool:
+    def _create_repo(self, org: str, repo_name: str, metadata: Dict, config: Config) -> bool:
         """Create a new repository in the target organization with all settings"""
         if self.dry_run:
             self.logger.info(f"[DRY RUN] Would create repository {org}/{repo_name}")
@@ -627,7 +880,7 @@ class RepoSyncer:
 
             # Now apply all other settings via _set_repo_metadata
             # This includes topics, merge settings, Actions settings, etc.
-            self._set_repo_metadata(org, repo_name, metadata)
+            self._set_repo_metadata(org, repo_name, metadata, config)
 
             return True
         except GithubException as e:
@@ -1282,7 +1535,7 @@ class RepoSyncer:
             return False
 
     def sync_repository(self, source_org: str, repo_name: str,
-                       target_org: str) -> SyncResult:
+                       target_org: str, config: Config) -> SyncResult:
         """
         Sync a single repository from source to target organization.
         Returns SyncResult with status and message.
@@ -1327,7 +1580,7 @@ class RepoSyncer:
 
             if not target_exists:
                 # Create new repository in target org
-                if not self._create_repo(target_org, repo_name, source_metadata):
+                if not self._create_repo(target_org, repo_name, source_metadata, config):
                     return SyncResult(
                         repo_name=repo_name,
                         target_org=target_org,
@@ -1345,7 +1598,7 @@ class RepoSyncer:
                     )
 
                 # Update metadata
-                self._set_repo_metadata(target_org, repo_name, source_metadata)
+                self._set_repo_metadata(target_org, repo_name, source_metadata, config)
 
                 return SyncResult(
                     repo_name=repo_name,
@@ -1371,7 +1624,7 @@ class RepoSyncer:
                         )
 
                     # Update metadata
-                    self._set_repo_metadata(target_org, repo_name, source_metadata)
+                    self._set_repo_metadata(target_org, repo_name, source_metadata, config)
 
                     return SyncResult(
                         repo_name=repo_name,
@@ -1458,7 +1711,7 @@ class RepoSyncer:
                 current += 1
                 self.logger.info(f"[{current}/{total_syncs}] Syncing: {repo_name} ({config.source_org} → {target_org})")
 
-                result = self.sync_repository(config.source_org, repo_name, target_org)
+                result = self.sync_repository(config.source_org, repo_name, target_org, config)
                 results.append(result)
 
                 # Log result with clear visual indicators

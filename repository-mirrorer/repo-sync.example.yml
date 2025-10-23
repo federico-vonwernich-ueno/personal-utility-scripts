@@ -1,7 +1,8 @@
 # Repository Sync Configuration
 #
 # This configuration file defines which repositories to sync from a source
-# organization to one or more target organizations.
+# organization to one or more target organizations, with flexible settings
+# exclusion rules.
 
 # Source organization (where repositories will be cloned from)
 source_org: "my-source-org"
@@ -21,3 +22,168 @@ repositories:
   - "repo-name-3"
   - "my-important-project"
   - "another-project"
+
+# ============================================================================
+# OPTIONAL: Organization and Repository Groups
+# ============================================================================
+# Define reusable groups for more maintainable exclusion rules
+
+organization_groups:
+  # Production organizations with strict policies
+  production:
+    - "target-org-1"
+    - "prod-org-alpha"
+
+  # Development/testing organizations
+  development:
+    - "target-org-2"
+    - "dev-org-beta"
+
+repository_groups:
+  # Backend services
+  backend:
+    - "api-service"
+    - "backend-app"
+
+  # Frontend applications
+  frontend:
+    - "web-app"
+    - "mobile-app"
+
+  # Infrastructure repositories
+  infrastructure:
+    - "terraform-configs"
+    - "k8s-manifests"
+
+# ============================================================================
+# OPTIONAL: Settings Exclusion Rules
+# ============================================================================
+# Control which repository settings should NOT be synced for specific
+# organizations, repositories, or combinations.
+#
+# Rules are evaluated in order of specificity (most to least specific):
+# 1. Combinations (org + repo)
+# 2. Per-organization
+# 3. Per-organization-group
+# 4. Per-repository
+# 5. Per-repository-group
+# 6. Global
+#
+# Common settings you might want to exclude:
+#   Repository settings: description, homepage, private, archived, is_template
+#   Features: has_issues, has_wiki, has_projects, has_discussions
+#   Merge settings: allow_squash_merge, allow_merge_commit, allow_rebase_merge,
+#                   allow_auto_merge, delete_branch_on_merge, allow_update_branch
+#   Merge formats: squash_merge_commit_title, squash_merge_commit_message,
+#                  merge_commit_title, merge_commit_message
+#   Other: allow_forking, web_commit_signoff_required
+
+exclusions:
+  # --------------------------------------------------------------------------
+  # Global exclusions - apply to ALL syncs
+  # --------------------------------------------------------------------------
+  # Use this for settings that should never be synced, regardless of org/repo
+  global:
+    # Example: Don't sync commit signoff requirement globally
+    # - web_commit_signoff_required
+
+  # --------------------------------------------------------------------------
+  # Per-organization exclusions
+  # --------------------------------------------------------------------------
+  # Exclude specific settings for individual target organizations
+  organizations:
+    # Example: target-org-1 doesn't allow private repository forking
+    target-org-1:
+      - allow_forking  # Fixes: "This organization does not allow private repository forking"
+      - web_commit_signoff_required
+
+    # Example: target-org-2 has its own merge strategy policies
+    # target-org-2:
+    #   - allow_auto_merge
+    #   - squash_merge_commit_title
+
+  # --------------------------------------------------------------------------
+  # Per-organization-group exclusions
+  # --------------------------------------------------------------------------
+  # Exclude settings for all organizations in a group
+  organization_groups:
+    # Example: Production orgs have stricter policies
+    production:
+      - allow_forking
+      - allow_auto_merge
+      - web_commit_signoff_required
+
+    # Development orgs might allow more flexibility
+    # development:
+    #   - web_commit_signoff_required
+
+  # --------------------------------------------------------------------------
+  # Per-repository exclusions
+  # --------------------------------------------------------------------------
+  # Exclude settings for specific repositories (regardless of target org)
+  repositories:
+    # Example: Sensitive repository with custom settings
+    # sensitive-repo:
+    #   - allow_forking
+    #   - has_wiki
+
+    # Example: Public template repository
+    # template-repo:
+    #   - private
+
+  # --------------------------------------------------------------------------
+  # Per-repository-group exclusions
+  # --------------------------------------------------------------------------
+  # Exclude settings for all repositories in a group
+  repository_groups:
+    # Example: Infrastructure repos might need different settings
+    # infrastructure:
+    #   - has_wiki
+    #   - has_projects
+
+    # Example: Frontend repos
+    # frontend:
+    #   - has_discussions
+
+  # --------------------------------------------------------------------------
+  # Combination exclusions (most specific)
+  # --------------------------------------------------------------------------
+  # Exclude settings for specific org-repo pairs
+  # Use this when a particular setting should only be excluded for one
+  # specific repository in one specific organization
+  combinations:
+    # Example: Specific repo in specific org needs custom handling
+    # - organization: "target-org-1"
+    #   repository: "repo-name-1"
+    #   settings:
+    #     - allow_update_branch
+    #     - has_discussions
+
+# ============================================================================
+# Usage Examples
+# ============================================================================
+#
+# Example 1: Fix "organization does not allow private repository forking"
+# Add to exclusions.organizations:
+#   your-org-name:
+#     - allow_forking
+#
+# Example 2: Exclude all merge settings for production orgs
+# Add to exclusions.organization_groups:
+#   production:
+#     - allow_squash_merge
+#     - allow_merge_commit
+#     - allow_rebase_merge
+#     - allow_auto_merge
+#
+# Example 3: Never sync wiki settings
+# Add to exclusions.global:
+#   - has_wiki
+#
+# Example 4: Custom settings for one repo in one org
+# Add to exclusions.combinations:
+#   - organization: "special-org"
+#     repository: "special-repo"
+#     settings:
+#       - allow_forking
+#       - has_discussions
