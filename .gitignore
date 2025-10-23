@@ -60,3 +60,5 @@ htmlcov/
 .pytest_cache/
 .tox/
 .hypothesis/
+
+.workflow-monitor-state.json
