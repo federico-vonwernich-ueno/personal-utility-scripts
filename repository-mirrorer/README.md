@@ -4,6 +4,40 @@ Mirror and sync repositories from a source GitHub organization to multiple targe
 
 ## Overview
 
+This directory provides **two approaches** for repository mirroring:
+
+1. **Centralized Python Script** (`repo-sync.py`) - Sync multiple repositories with comprehensive metadata
+2. **Per-Repository Workflow** (`templates/mirror.yml`) - Automatic mirroring on every push
+
+### Approach Comparison
+
+| Feature | Centralized Script | Automatic Workflow |
+|---------|-------------------|-------------------|
+| **Use Case** | Scheduled bulk sync | Real-time mirroring |
+| **Trigger** | Manual or scheduled | Every push to main |
+| **Scope** | Multiple repositories | Single repository |
+| **Setup Location** | Central automation repo | Each repository |
+| **Metadata Sync** | ✅ Comprehensive | ❌ Git only |
+| **Settings Sync** | ✅ Full control | ❌ Not included |
+| **Complexity** | Higher (Python deps) | Lower (pure git) |
+| **Best For** | Org migrations, bulk updates | Keeping mirrors in sync |
+
+**Use the centralized script when:**
+- Migrating multiple repositories to new organizations
+- Syncing repository metadata and settings
+- Running periodic bulk updates
+- Need exclusion rules and conflict detection
+
+**Use the automatic workflow when:**
+- Want instant mirroring on every push
+- Only need git data (code, commits, tags)
+- Setting up per-repository automation
+- Simpler setup with no dependencies
+
+---
+
+## Centralized Python Script
+
 `repo-sync.py` creates exact mirrors of repositories including all branches, tags, and commit history, syncing them to one or more target organizations. Supports initial migration and incremental updates with fast-forward checks.
 
 ### Key Features
@@ -258,6 +292,131 @@ This template is automatically used when Slack notifications are enabled.
 - Use GitHub Secrets for tokens in Actions workflows
 - Limit token scopes to minimum required
 - Regularly rotate Personal Access Tokens
+
+---
+
+## Automatic Mirroring Workflow
+
+For per-repository automatic mirroring, use the GitHub Actions workflow template.
+
+### Quick Setup
+
+1. **Copy the template to your repository:**
+   ```bash
+   cp templates/mirror.yml /path/to/your/repo/.github/workflows/mirror.yml
+   ```
+
+2. **Edit the workflow** and update target organizations:
+   ```yaml
+   matrix:
+     target:
+       - org: your-target-org-1
+         token: TARGET_ORG1_TOKEN
+       - org: your-target-org-2
+         token: TARGET_ORG2_TOKEN
+   ```
+
+3. **Create Personal Access Tokens:**
+   - Go to: https://github.com/settings/tokens
+   - Create fine-grained PAT for each target organization
+   - Grant `Contents: Read and write` permission
+   - Scope to target organization's repositories
+
+4. **Add tokens as repository secrets:**
+   - In your repository: Settings > Secrets and variables > Actions
+   - Create secrets: `TARGET_ORG1_TOKEN`, `TARGET_ORG2_TOKEN`, etc.
+   - Paste the corresponding PAT values
+
+5. **Ensure target repositories exist:**
+   - The workflow does NOT create repositories
+   - Create them manually or use `repo-sync.py` first
+
+6. **Push to main branch:**
+   - The workflow will automatically mirror to all targets
+   - Check Actions tab to monitor progress
+
+### What Gets Mirrored
+
+✅ Main branch with full commit history
+✅ All tags
+✅ Instant updates on every push
+
+❌ Other branches (feature branches, develop, etc.)
+❌ Repository metadata (description, topics, settings)
+❌ Issues, PRs, wiki, discussions
+
+**Note:** For metadata sync, use the centralized `repo-sync.py` script periodically.
+
+### How It Works
+
+The workflow uses GitHub Actions **matrix strategy** to:
+1. Trigger automatically on pushes to `main` branch or new tags
+2. Create parallel jobs for each target organization
+3. Use native git commands to push main branch and tags
+4. Continue even if one target fails (fail-fast: false)
+
+### Advanced Configuration
+
+**Add more targets:**
+```yaml
+matrix:
+  target:
+    - org: target-org-1
+      token: TARGET_ORG1_TOKEN
+    - org: target-org-2
+      token: TARGET_ORG2_TOKEN
+    - org: target-org-3
+      token: TARGET_ORG3_TOKEN
+```
+
+**Force push (overwrite diverged targets):**
+```yaml
+- name: Mirror to target
+  run: |
+    git push --force "${TARGET_URL}" main:main
+    git push --force "${TARGET_URL}" --tags
+```
+
+**Mirror different branch:**
+```yaml
+on:
+  push:
+    branches:
+      - develop  # Change from 'main'
+```
+
+### Troubleshooting
+
+**"Permission denied" or "403 Forbidden"**
+- Verify PAT has `Contents: Read and write` permission
+- Check PAT is scoped to the target organization
+- Ensure target repository exists
+
+**"couldn't find remote ref main"**
+- Target repository doesn't exist or is empty
+- Create the repository first or use `repo-sync.py`
+
+**Workflow doesn't trigger**
+- Ensure workflow file is in `.github/workflows/` directory
+- Check workflow syntax: `gh workflow view mirror`
+- Verify branch name matches (main vs master)
+
+**Multiple jobs fail simultaneously**
+- Check token expiration
+- Verify all target repositories exist
+- Review Actions logs for specific errors
+
+### Combining Both Approaches
+
+**Recommended setup:**
+1. Use **automatic workflow** for instant git mirroring
+2. Run **centralized script** weekly/monthly for metadata sync
+
+**Example schedule:**
+- Automatic workflow: Mirrors code on every push (instant)
+- Centralized script: Syncs metadata weekly (comprehensive)
+
+This gives you real-time code mirroring plus comprehensive metadata synchronization.
 
 ## Related Documentation
 

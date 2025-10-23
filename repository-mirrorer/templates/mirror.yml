@@ -1,0 +1,108 @@
+# GitHub Actions Workflow: Automatic Repository Mirroring
+#
+# This workflow automatically mirrors the main branch and all tags from this repository
+# to one or more target organizations whenever changes are pushed.
+#
+# SETUP INSTRUCTIONS:
+# 1. Copy this file to your repository's .github/workflows/ directory
+# 2. Update the target organizations in the matrix below
+# 3. Create GitHub Personal Access Tokens (PAT) for each target organization:
+#    - Go to: https://github.com/settings/tokens
+#    - Create fine-grained PAT with 'Contents: Read and write' permission
+#    - Scope it to the target organization's repositories
+# 4. Add tokens as secrets in this repository:
+#    - Go to: Settings > Secrets and variables > Actions > New repository secret
+#    - Name them as specified in the matrix (e.g., TARGET_ORG1_TOKEN, TARGET_ORG2_TOKEN)
+# 5. Ensure target repositories exist (this workflow does NOT create them)
+#
+# WHAT GETS MIRRORED:
+# - Main branch only (not feature branches)
+# - All tags
+# - Full commit history
+#
+# WHAT DOES NOT GET MIRRORED:
+# - Other branches (develop, feature/*, etc.)
+# - Repository metadata (description, topics, settings)
+# - Issues, PRs, wiki, discussions
+# - For metadata sync, use the repo-sync.py script instead
+
+name: Mirror Repository
+
+# Trigger on pushes to main branch or new tags
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - '**'
+
+  # Allow manual triggering from Actions UI
+  workflow_dispatch:
+
+jobs:
+  mirror:
+    name: Mirror to ${{ matrix.target.org }}
+    runs-on: ubuntu-latest
+
+    # Prevent concurrent mirror operations to avoid conflicts
+    concurrency:
+      group: mirror-${{ matrix.target.org }}
+      cancel-in-progress: false
+
+    # Define target organizations
+    # Add or remove entries as needed
+    strategy:
+      # Continue mirroring to other targets even if one fails
+      fail-fast: false
+
+      matrix:
+        target:
+          # Example target 1
+          - org: target-org-1
+            token: TARGET_ORG1_TOKEN
+
+          # Example target 2
+          - org: target-org-2
+            token: TARGET_ORG2_TOKEN
+
+          # Add more targets as needed:
+          # - org: target-org-3
+          #   token: TARGET_ORG3_TOKEN
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0      # Fetch full history (required for mirroring)
+          fetch-tags: true    # Fetch all tags
+
+      - name: Mirror to ${{ matrix.target.org }}
+        env:
+          TARGET_TOKEN: ${{ secrets[matrix.target.token] }}
+        run: |
+          REPO_NAME="${{ github.event.repository.name }}"
+          TARGET_ORG="${{ matrix.target.org }}"
+          TARGET_URL="https://x-access-token:${TARGET_TOKEN}@github.com/${TARGET_ORG}/${REPO_NAME}.git"
+
+          echo "🔄 Mirroring to ${TARGET_ORG}/${REPO_NAME}..."
+
+          # Push main branch
+          echo "📤 Pushing main branch..."
+          git push "${TARGET_URL}" main:main
+
+          # Push all tags
+          echo "🏷️  Pushing tags..."
+          git push "${TARGET_URL}" --tags
+
+          echo "✅ Successfully mirrored to ${TARGET_ORG}/${REPO_NAME}"
+
+      - name: Report status
+        if: always()
+        run: |
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "✅ Mirror to ${{ matrix.target.org }} completed successfully"
+          else
+            echo "❌ Mirror to ${{ matrix.target.org }} failed"
+            exit 1
+          fi
