@@ -795,31 +795,51 @@ class RepoSyncer:
 
                 # Sync Actions permissions (enabled/disabled, allowed actions)
                 if 'actions_permissions' in actions_settings:
-                    if self._set_repo_actions_permissions(org, repo_name, actions_settings['actions_permissions']):
-                        settings_synced['success'].append('actions_permissions')
+                    should_exclude, reason = self._should_exclude_setting(org, repo_name, 'actions_permissions', config)
+                    if should_exclude:
+                        settings_excluded.append(('actions_permissions', reason))
+                        self.logger.debug(f"Excluding 'actions_permissions' for {org}/{repo_name}: {reason}")
                     else:
-                        settings_synced['failed'].append('actions_permissions')
+                        if self._set_repo_actions_permissions(org, repo_name, actions_settings['actions_permissions']):
+                            settings_synced['success'].append('actions_permissions')
+                        else:
+                            settings_synced['failed'].append('actions_permissions')
 
                     # Sync selected actions (if allowed_actions is 'selected')
                     if 'selected_actions' in actions_settings:
-                        if self._set_repo_actions_selected_actions(org, repo_name, actions_settings['selected_actions']):
-                            settings_synced['success'].append('selected_actions')
+                        should_exclude, reason = self._should_exclude_setting(org, repo_name, 'selected_actions', config)
+                        if should_exclude:
+                            settings_excluded.append(('selected_actions', reason))
+                            self.logger.debug(f"Excluding 'selected_actions' for {org}/{repo_name}: {reason}")
                         else:
-                            settings_synced['failed'].append('selected_actions')
+                            if self._set_repo_actions_selected_actions(org, repo_name, actions_settings['selected_actions']):
+                                settings_synced['success'].append('selected_actions')
+                            else:
+                                settings_synced['failed'].append('selected_actions')
 
                 # Sync workflow permissions
                 if 'workflow_permissions' in actions_settings:
-                    if self._set_repo_workflow_permissions(org, repo_name, actions_settings['workflow_permissions']):
-                        settings_synced['success'].append('workflow_permissions')
+                    should_exclude, reason = self._should_exclude_setting(org, repo_name, 'workflow_permissions', config)
+                    if should_exclude:
+                        settings_excluded.append(('workflow_permissions', reason))
+                        self.logger.debug(f"Excluding 'workflow_permissions' for {org}/{repo_name}: {reason}")
                     else:
-                        settings_synced['failed'].append('workflow_permissions')
+                        if self._set_repo_workflow_permissions(org, repo_name, actions_settings['workflow_permissions']):
+                            settings_synced['success'].append('workflow_permissions')
+                        else:
+                            settings_synced['failed'].append('workflow_permissions')
 
                 # Sync workflow access level (for private repos)
                 if 'workflow_access' in actions_settings:
-                    if self._set_repo_workflow_access_level(org, repo_name, actions_settings['workflow_access']):
-                        settings_synced['success'].append('workflow_access')
+                    should_exclude, reason = self._should_exclude_setting(org, repo_name, 'workflow_access', config)
+                    if should_exclude:
+                        settings_excluded.append(('workflow_access', reason))
+                        self.logger.debug(f"Excluding 'workflow_access' for {org}/{repo_name}: {reason}")
                     else:
-                        settings_synced['failed'].append('workflow_access')
+                        if self._set_repo_workflow_access_level(org, repo_name, actions_settings['workflow_access']):
+                            settings_synced['success'].append('workflow_access')
+                        else:
+                            settings_synced['failed'].append('workflow_access')
 
             # Log summary
             total_success = len(settings_synced['success'])
