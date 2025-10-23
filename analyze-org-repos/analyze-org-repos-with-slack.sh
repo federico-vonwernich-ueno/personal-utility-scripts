@@ -44,12 +44,14 @@ MAVEN_OUTPUT_FILE="maven-repos.yml"
 GRADLE_OUTPUT_FILE="gradle-repos.yml"
 NODE_OUTPUT_FILE="node-repos.yml"
 GO_OUTPUT_FILE="go-repos.yml"
+FLUTTER_OUTPUT_FILE="flutter-repos.yml"
 
 # Output files - repositories without unified CI
 MAVEN_WITHOUT_CI_FILE="maven-repos-without-ci.yml"
 GRADLE_WITHOUT_CI_FILE="gradle-repos-without-ci.yml"
 NODE_WITHOUT_CI_FILE="node-repos-without-ci.yml"
 GO_WITHOUT_CI_FILE="go-repos-without-ci.yml"
+FLUTTER_WITHOUT_CI_FILE="flutter-repos-without-ci.yml"
 
 # Output file - repositories that failed analysis
 FAILED_REPOS_FILE="failed-repos.txt"
@@ -59,6 +61,7 @@ maven_repos=0
 gradle_repos=0
 node_repos=0
 go_repos=0
+flutter_repos=0
 other_repos=0
 
 # CI detection counters
@@ -66,6 +69,10 @@ maven_ci_repos=0
 gradle_ci_repos=0
 node_ci_repos=0
 go_ci_repos=0
+flutter_ci_repos=0
+
+# Archive tracking
+archived_repos=0
 
 # Failure tracking
 failed_repos=0
@@ -328,11 +335,14 @@ MAVEN_REPOS=$maven_repos
 GRADLE_REPOS=$gradle_repos
 NODE_REPOS=$node_repos
 GO_REPOS=$go_repos
+FLUTTER_REPOS=$flutter_repos
 OTHER_REPOS=$other_repos
 MAVEN_CI_REPOS=$maven_ci_repos
 GRADLE_CI_REPOS=$gradle_ci_repos
 NODE_CI_REPOS=$node_ci_repos
 GO_CI_REPOS=$go_ci_repos
+FLUTTER_CI_REPOS=$flutter_ci_repos
+ARCHIVED_REPOS=$archived_repos
 FAILED_REPOS_COUNT=$failed_repos
 TOTAL_REPOS=$total_repos
 TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
@@ -562,10 +572,12 @@ if [[ "$RESUME_FROM_CHECKPOINT" != "true" ]]; then
   : > "$GRADLE_OUTPUT_FILE"
   : > "$NODE_OUTPUT_FILE"
   : > "$GO_OUTPUT_FILE"
+  : > "$FLUTTER_OUTPUT_FILE"
   : > "$MAVEN_WITHOUT_CI_FILE"
   : > "$GRADLE_WITHOUT_CI_FILE"
   : > "$NODE_WITHOUT_CI_FILE"
   : > "$GO_WITHOUT_CI_FILE"
+  : > "$FLUTTER_WITHOUT_CI_FILE"
   echo "✅ Archivos de salida inicializados"
 fi
 
@@ -592,6 +604,7 @@ echo "===============================\n"
 
 # Fetch all repositories using GraphQL with pagination
 REPOS=()
+typeset -A REPO_ARCHIVED  # Associative array: repo_name -> true/false
 END_CURSOR=""
 page_count=0
 
@@ -602,6 +615,7 @@ query($owner: String!, $endCursor: String) {
     repositories(first: 100, after: $endCursor) {
       nodes {
         name
+        isArchived
       }
       pageInfo {
         hasNextPage
@@ -643,6 +657,14 @@ while true; do
     echo "⚠️  No repositories found in this page"
     break
   fi
+
+  # Store archived status for each repository
+  while IFS= read -r repo_name; do
+    [[ -z "$repo_name" ]] && continue
+    local is_archived=$(echo "$REPO_DATA" | jq -r ".nodes[] | select(.name == \"$repo_name\") | .isArchived" 2>/dev/null)
+    REPO_ARCHIVED[$repo_name]="$is_archived"
+  done <<< "$(printf '%s\n' "${NEW_REPOS[@]}")"
+
   REPOS+=(${NEW_REPOS[@]})
   echo "    Found ${#NEW_REPOS[@]} repositories (total: ${#REPOS[@]})"
   HAS_NEXT_PAGE=$(echo "$REPO_DATA" | jq -r '.pageInfo.hasNextPage' 2>/dev/null)
@@ -707,6 +729,15 @@ for REPO in $REPOS; do
   echo "URL: $REPO_URL"
   COUNTER=$((COUNTER + 1))
 
+  # Check if repository is archived
+  if [[ "${REPO_ARCHIVED[$REPO]}" == "true" ]]; then
+    echo "📦 Repositorio archivado - omitiendo análisis"
+    archived_repos=$((archived_repos + 1))
+    save_checkpoint "$REPO"
+    echo ""
+    continue
+  fi
+
   # Try to get default branch with retry logic
   DEFAULT_BRANCH_OUTPUT=$(safe_gh_repo_view "$ORG/$REPO" --json defaultBranchRef -q .defaultBranchRef.name 2>&1)
   branch_exit_code=$?
@@ -770,6 +801,17 @@ for REPO in $REPOS; do
     go_repos=$((go_repos + 1))
     echo "    -> Contador Go: $go_repos"
     PROJECT_TYPE="go"
+  elif safe_gh_api repos/$ORG/$REPO/contents/pubspec.yaml?ref=$DEFAULT_BRANCH >/dev/null 2>&1; then
+    exit_code=$?
+    if (( exit_code == 2 )); then
+      save_checkpoint "$REPO"
+      echo "⚠️  Rate limit reached. Progress saved. Exiting..."
+      exit 3
+    fi
+    echo "  - Tipo de proyecto: Flutter (pubspec.yaml encontrado)"
+    flutter_repos=$((flutter_repos + 1))
+    echo "    -> Contador Flutter: $flutter_repos"
+    PROJECT_TYPE="flutter"
   else
     echo "  - Tipo de proyecto: No determinado"
     other_repos=$((other_repos + 1))
@@ -855,6 +897,7 @@ for REPO in $REPOS; do
   gradle_found=0
   node_found=0
   go_found=0
+  flutter_found=0
 
   if [[ -n "$FILES" ]]; then
     # Show workflow count and numbered list
@@ -910,7 +953,7 @@ for REPO in $REPOS; do
       fi
 
       # Detect references to reusable workflows
-      REFS=$(printf "%s" "$CONTENT" | grep -oE '(maven-ci.yml|gradle-ci.yml|node-ci.yml|go-ci.yml)' | sort -u | tr '\n' ',' | sed 's/,$//')
+      REFS=$(printf "%s" "$CONTENT" | grep -oE '(maven-ci.yml|gradle-ci.yml|node-ci.yml|go-ci.yml|flutter-ci.yml)' | sort -u | tr '\n' ',' | sed 's/,$//')
       if [[ -z "$REFS" ]]; then REFS="(ninguna)"; fi
 
       # Print workflow analysis
@@ -961,6 +1004,16 @@ for REPO in $REPOS; do
         echo "    branch: $DEFAULT_BRANCH" >> "$GO_OUTPUT_FILE"
         go_found=1
       fi
+
+      # Check for flutter-ci.yml
+      if [[ $flutter_found -eq 0 ]] && printf "%s" "$CONTENT" | grep -q 'flutter-ci.yml'; then
+        echo "    ✔ Se encontró referencia a flutter-ci.yml en $WF"
+        flutter_ci_repos=$((flutter_ci_repos + 1))
+        echo "  - url: $REPO_URL" >> "$FLUTTER_OUTPUT_FILE"
+        echo "    name: $REPO" >> "$FLUTTER_OUTPUT_FILE"
+        echo "    branch: $DEFAULT_BRANCH" >> "$FLUTTER_OUTPUT_FILE"
+        flutter_found=1
+      fi
     done <<< "$FILES"
   else
     echo ""
@@ -999,6 +1052,14 @@ for REPO in $REPOS; do
     echo "  - url: $REPO_URL" >> "$GO_WITHOUT_CI_FILE"
     echo "    name: $REPO" >> "$GO_WITHOUT_CI_FILE"
     echo "    branch: $DEFAULT_BRANCH" >> "$GO_WITHOUT_CI_FILE"
+  fi
+
+  if [[ "$PROJECT_TYPE" == "flutter" ]] && [[ $flutter_found -eq 0 ]]; then
+    echo ""
+    echo "  ⚠ Repositorio Flutter sin CI unificado"
+    echo "  - url: $REPO_URL" >> "$FLUTTER_WITHOUT_CI_FILE"
+    echo "    name: $REPO" >> "$FLUTTER_WITHOUT_CI_FILE"
+    echo "    branch: $DEFAULT_BRANCH" >> "$FLUTTER_WITHOUT_CI_FILE"
   fi
 
   # Save checkpoint after each repo
@@ -1053,11 +1114,15 @@ echo "Total de repositorios procesados: $total_repos"
 if [[ $REPO_LIMIT -gt 0 ]]; then
   echo "(⚠ Análisis limitado a $REPO_LIMIT repositorios)"
 fi
+if (( archived_repos > 0 )); then
+  echo ""
+  echo "📦 Repositorios archivados (omitidos): $archived_repos"
+fi
 if (( failed_repos > 0 )); then
   echo ""
   echo "⚠️  Repositorios que fallaron al analizar: $failed_repos"
   echo "    (Ver $FAILED_REPOS_FILE para detalles)"
-  successful_repos=$((total_repos - failed_repos))
+  successful_repos=$((total_repos - failed_repos - archived_repos))
   echo "✅ Repositorios analizados exitosamente: $successful_repos"
 fi
 echo "-------------------------------"
@@ -1066,17 +1131,24 @@ echo "  - Maven: $maven_ci_repos"
 echo "  - Gradle: $gradle_ci_repos"
 echo "  - Node.js: $node_ci_repos"
 echo "  - Go: $go_ci_repos"
+echo "  - Flutter: $flutter_ci_repos"
 echo "-------------------------------"
 echo "Tipos de proyecto detectados:"
 echo "  - Maven: $maven_repos (sin CI: $((maven_repos - maven_ci_repos)))"
 echo "  - Gradle: $gradle_repos (sin CI: $((gradle_repos - gradle_ci_repos)))"
 echo "  - Node.js: $node_repos (sin CI: $((node_repos - node_ci_repos)))"
 echo "  - Go: $go_repos (sin CI: $((go_repos - go_ci_repos)))"
+echo "  - Flutter: $flutter_repos (sin CI: $((flutter_repos - flutter_ci_repos)))"
 echo "  - Otros: $other_repos"
 if (( failed_repos > 0 )); then
   echo ""
   echo "ℹ️  Nota: Los contadores anteriores no incluyen los $failed_repos repositorios"
   echo "   que fallaron durante el análisis (por errores de red u otros problemas)."
+fi
+if (( archived_repos > 0 )); then
+  echo ""
+  echo "ℹ️  Nota: Los contadores anteriores no incluyen los $archived_repos repositorios"
+  echo "   archivados que fueron omitidos del análisis."
 fi
 echo "-------------------------------"
 echo "Archivos generados:"
@@ -1088,19 +1160,21 @@ fi
 echo "==============================="
 
 # Prepare Slack summary message
-TOTAL_WITH_CI=$((maven_ci_repos + gradle_ci_repos + node_ci_repos + go_ci_repos))
-TOTAL_WITHOUT_CI=$((maven_repos - maven_ci_repos + gradle_repos - gradle_ci_repos + node_repos - node_ci_repos + go_repos - go_ci_repos))
+TOTAL_WITH_CI=$((maven_ci_repos + gradle_ci_repos + node_ci_repos + go_ci_repos + flutter_ci_repos))
+TOTAL_WITHOUT_CI=$((maven_repos - maven_ci_repos + gradle_repos - gradle_ci_repos + node_repos - node_ci_repos + go_repos - go_ci_repos + flutter_repos - flutter_ci_repos))
 
 SLACK_MESSAGE=$(cat <<EOF
 *Repositorios procesados:* $total_repos
 *Con CI unificado:* $TOTAL_WITH_CI
 *Sin CI unificado:* $TOTAL_WITHOUT_CI
+*Archivados (omitidos):* $archived_repos
 
 *Desglose por tecnología:*
 • Maven: $maven_repos total ($maven_ci_repos con CI, $((maven_repos - maven_ci_repos)) sin CI)
 • Gradle: $gradle_repos total ($gradle_ci_repos con CI, $((gradle_repos - gradle_ci_repos)) sin CI)
 • Node.js: $node_repos total ($node_ci_repos con CI, $((node_repos - node_ci_repos)) sin CI)
 • Go: $go_repos total ($go_ci_repos con CI, $((go_repos - go_ci_repos)) sin CI)
+• Flutter: $flutter_repos total ($flutter_ci_repos con CI, $((flutter_repos - flutter_ci_repos)) sin CI)
 • Otros: $other_repos
 
 ⏱️ *Duración:* ${DURATION_MIN}m ${DURATION_SEC}s
@@ -1119,7 +1193,7 @@ if [[ $REPO_LIMIT -gt 0 ]]; then
 fi
 
 # Build list of files to attach
-ATTACH_FILES="$MAVEN_OUTPUT_FILE $GRADLE_OUTPUT_FILE $NODE_OUTPUT_FILE $GO_OUTPUT_FILE $MAVEN_WITHOUT_CI_FILE $GRADLE_WITHOUT_CI_FILE $NODE_WITHOUT_CI_FILE $GO_WITHOUT_CI_FILE"
+ATTACH_FILES="$MAVEN_OUTPUT_FILE $GRADLE_OUTPUT_FILE $NODE_OUTPUT_FILE $GO_OUTPUT_FILE $FLUTTER_OUTPUT_FILE $MAVEN_WITHOUT_CI_FILE $GRADLE_WITHOUT_CI_FILE $NODE_WITHOUT_CI_FILE $GO_WITHOUT_CI_FILE $FLUTTER_WITHOUT_CI_FILE"
 ATTACH_FILES="$ATTACH_FILES $LOG_FILE"
 
 # Add failed repos file if it exists
@@ -1128,7 +1202,7 @@ if (( failed_repos > 0 )); then
 fi
 
 # Prepare metadata fields for Slack
-SLACK_FIELDS="Total:$total_repos,Con CI:$TOTAL_WITH_CI,Sin CI:$TOTAL_WITHOUT_CI"
+SLACK_FIELDS="Total:$total_repos,Con CI:$TOTAL_WITH_CI,Sin CI:$TOTAL_WITHOUT_CI,Archivados:$archived_repos"
 if (( failed_repos > 0 )); then
   SLACK_FIELDS+=",Fallidos:$failed_repos"
 fi
