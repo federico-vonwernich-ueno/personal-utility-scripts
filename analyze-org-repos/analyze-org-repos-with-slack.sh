@@ -1,12 +1,14 @@
 #!/bin/zsh
 # Script para generar lista de repositorios con workflows de CI reutilizables
-# Con integración de notificaciones Slack
-# Requiere: gh, jq, python3, y acceso de lectura a los repositorios
+# Con integración de notificaciones Slack y análisis de métricas CSV
+# Requiere: gh, jq, python3, bc, y acceso de lectura a los repositorios
 #
-# Uso: ./analyze-org-repos-with-slack.sh <ORGANIZATION> [LIMIT]
+# Uso: ./analyze-org-repos-with-slack.sh <ORGANIZATION> [LIMIT] [--csv-file <PATH>]
 #   ORGANIZATION: Nombre de la organización de GitHub (requerido)
 #   LIMIT: Número máximo de repositorios a analizar (opcional)
 #          Si no se especifica, se analizan todos los repositorios
+#   --csv-file: Archivo CSV con información de adopción y tecnología (opcional)
+#               El CSV debe contener las columnas: Repositorio, Adopcion, Tecnología
 
 #================================================================
 # SHELL CONFIGURATION
@@ -56,6 +58,10 @@ FLUTTER_WITHOUT_CI_FILE="flutter-repos-without-ci.yml"
 # Output file - repositories that failed analysis
 FAILED_REPOS_FILE="failed-repos.txt"
 
+# Output files - CSV analysis reports
+TECH_MISMATCHES_FILE="technology-mismatches.txt"
+TECH_ADOPTION_DIST_FILE="technology-adoption-distribution.txt"
+
 # Project type counters
 maven_repos=0
 gradle_repos=0
@@ -83,30 +89,218 @@ last_rate_limit_check=0
 rate_limit_remaining=5000
 rate_limit_reset=0
 
+# CSV data tracking
+typeset -A CSV_ADOPTION        # Maps repo_url -> adoption value
+typeset -A CSV_TECHNOLOGY      # Maps repo_url -> technology value
+typeset -A ADOPTION_COUNTERS   # Global adoption state counts
+typeset -A TECH_ADOPTION_COUNTERS  # Technology+adoption combo counts (e.g., "maven:Adoptado")
+typeset -A TECH_IN_CSV_COUNT   # Count of each tech found in CSV
+typeset -A TECH_MISMATCHES     # Maps repo -> "CSV_tech vs Detected_tech"
+tech_matches=0
+tech_mismatches=0
+repos_in_csv=0
+not_in_csv_repos=0
+
 #================================================================
 # INPUT PARAMETERS AND VALIDATION
 #================================================================
 
-ORG="${1:-}"
-REPO_LIMIT=${2:-0}
+# Parse command line arguments
+ORG=""
+REPO_LIMIT=0
+CSV_FILE=""
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --csv-file)
+      CSV_FILE="$2"
+      shift 2
+      ;;
+    *)
+      # Positional arguments
+      if [[ -z "$ORG" ]]; then
+        ORG="$1"
+      elif [[ "$REPO_LIMIT" -eq 0 ]]; then
+        REPO_LIMIT="$1"
+      else
+        echo "Error: Argumento desconocido: $1"
+        echo "Uso: $0 <ORGANIZATION> [LIMIT] [--csv-file <PATH>]"
+        exit 1
+      fi
+      shift
+      ;;
+  esac
+done
 
 # Validate organization parameter
 if [[ -z "$ORG" ]]; then
   echo "Error: Debe especificar el nombre de la organización"
-  echo "Uso: $0 <ORGANIZATION> [LIMIT]"
+  echo "Uso: $0 <ORGANIZATION> [LIMIT] [--csv-file <PATH>]"
   exit 1
 fi
 
 # Validate repository limit parameter
 if [[ "$REPO_LIMIT" != "0" ]] && ! [[ "$REPO_LIMIT" =~ ^[0-9]+$ ]]; then
   echo "Error: El límite debe ser un número entero positivo"
-  echo "Uso: $0 <ORGANIZATION> [LIMIT]"
+  echo "Uso: $0 <ORGANIZATION> [LIMIT] [--csv-file <PATH>]"
   exit 1
+fi
+
+# Validate CSV file if provided
+if [[ -n "$CSV_FILE" ]]; then
+  if [[ ! -f "$CSV_FILE" ]]; then
+    echo "Error: El archivo CSV no existe: $CSV_FILE"
+    exit 1
+  fi
+  if [[ ! -r "$CSV_FILE" ]]; then
+    echo "Error: El archivo CSV no es legible: $CSV_FILE"
+    exit 1
+  fi
+  echo "✓ Archivo CSV encontrado: $CSV_FILE"
 fi
 
 #================================================================
 # UTILITY FUNCTIONS
 #================================================================
+
+# Normalize repository URL for consistent comparison
+# Args: $1 - repository URL
+# Returns: normalized URL via stdout
+normalize_repo_url() {
+  local url="$1"
+  # Remove trailing slashes
+  url="${url%/}"
+  # Remove .git suffix
+  url="${url%.git}"
+  # Convert http to https
+  url="${url/http:\/\//https://}"
+  echo "$url"
+}
+
+# Normalize technology name for comparison
+# Args: $1 - technology name from CSV
+# Returns: normalized tech name (maven|gradle|node|go|flutter|other) via stdout
+normalize_tech() {
+  local tech="$1"
+  # Convert to lowercase
+  tech="${tech:l}"
+
+  # Map variations to canonical names
+  case "$tech" in
+    *maven*|*java/maven*)
+      echo "maven"
+      ;;
+    *gradle*|*java/gradle*)
+      echo "gradle"
+      ;;
+    *node*|*nodejs*|*javascript*|*js*)
+      echo "node"
+      ;;
+    *golang*|*go*)
+      echo "go"
+      ;;
+    *flutter*|*dart*)
+      echo "flutter"
+      ;;
+    "")
+      echo ""
+      ;;
+    *)
+      echo "other"
+      ;;
+  esac
+}
+
+# Parse CSV file and populate global associative arrays
+# Args: $1 - CSV file path
+# Returns: 0 on success, 1 on error
+parse_csv_file() {
+  local csv_file="$1"
+
+  echo "📊 Analizando archivo CSV..."
+
+  # Use Python to parse CSV robustly
+  local parse_result
+  parse_result=$(python3 <<EOF
+import csv
+import sys
+import json
+
+try:
+    with open('$csv_file', 'r', encoding='utf-8-sig') as f:
+        reader = csv.DictReader(f)
+
+        # Check if required columns exist
+        if not reader.fieldnames:
+            print('ERROR: CSV file is empty or malformed', file=sys.stderr)
+            sys.exit(1)
+
+        # Find column names (case-insensitive)
+        repo_col = None
+        adoption_col = None
+        tech_col = None
+
+        for field in reader.fieldnames:
+            field_lower = field.lower().strip()
+            if 'repositorio' in field_lower:
+                repo_col = field
+            elif 'adopcion' in field_lower or 'adopción' in field_lower:
+                adoption_col = field
+            elif 'tecnolog' in field_lower:
+                tech_col = field
+
+        if not repo_col:
+            print('ERROR: Column "Repositorio" not found in CSV', file=sys.stderr)
+            sys.exit(1)
+
+        # Parse rows
+        data = []
+        for row in reader:
+            repo = row.get(repo_col, '').strip()
+            adoption = row.get(adoption_col, '').strip() if adoption_col else ''
+            tech = row.get(tech_col, '').strip() if tech_col else ''
+
+            if repo:  # Only include rows with repository URL
+                data.append({
+                    'repo': repo,
+                    'adoption': adoption,
+                    'tech': tech
+                })
+
+        print(json.dumps(data))
+
+except Exception as e:
+    print(f'ERROR: {str(e)}', file=sys.stderr)
+    sys.exit(1)
+EOF
+)
+
+  local exit_code=$?
+  if (( exit_code != 0 )); then
+    echo "❌ Error al analizar CSV: $parse_result" >&2
+    return 1
+  fi
+
+  # Parse JSON output and populate arrays
+  local count=0
+  while IFS= read -r line; do
+    local repo=$(echo "$line" | jq -r '.repo')
+    local adoption=$(echo "$line" | jq -r '.adoption')
+    local tech=$(echo "$line" | jq -r '.tech')
+
+    # Normalize repository URL
+    repo=$(normalize_repo_url "$repo")
+
+    # Store in associative arrays
+    CSV_ADOPTION[$repo]="$adoption"
+    CSV_TECHNOLOGY[$repo]="$tech"
+    count=$((count + 1))
+  done < <(echo "$parse_result" | jq -c '.[]')
+
+  echo "✓ CSV parseado exitosamente: $count repositorios encontrados"
+  return 0
+}
 
 # Decode base64 content with fallback for different OS (GNU/macOS)
 # Args: $1 - base64 encoded string
@@ -528,6 +722,170 @@ send_slack_notification() {
 }
 
 #================================================================
+# CSV REPORTING FUNCTIONS
+#================================================================
+
+# Generate technology mismatches report file
+# Returns: 0 on success
+generate_tech_mismatches_report() {
+  if (( tech_mismatches == 0 )); then
+    return 0
+  fi
+
+  echo "📄 Generando reporte de discrepancias de tecnología..."
+
+  : > "$TECH_MISMATCHES_FILE"  # Clear/create file
+  cat >> "$TECH_MISMATCHES_FILE" <<EOF
+# Discrepancias en Anotación de Tecnología
+# Fecha: $(date '+%Y-%m-%d %H:%M:%S')
+# Total de discrepancias: $tech_mismatches
+
+REPOSITORIO | URL | TECNOLOGÍA CSV | TECNOLOGÍA DETECTADA | ADOPCIÓN
+------------|-----|----------------|---------------------|----------
+EOF
+
+  for repo in "${(@k)TECH_MISMATCHES}"; do
+    local repo_url="https://github.com/$ORG/$repo"
+    local normalized_url=$(normalize_repo_url "$repo_url")
+    local mismatch_info="${TECH_MISMATCHES[$repo]}"
+    local adoption="${CSV_ADOPTION[$normalized_url]:-N/A}"
+
+    # Parse mismatch info: "CSV: tech_name (normalized) vs Detected: tech_name"
+    local csv_tech=$(echo "$mismatch_info" | sed -n 's/^CSV: \(.*\) (.*) vs Detected: .*$/\1/p')
+    local detected_tech=$(echo "$mismatch_info" | sed -n 's/^.* vs Detected: \(.*\)$/\1/p')
+
+    echo "$repo | $repo_url | $csv_tech | $detected_tech | $adoption" >> "$TECH_MISMATCHES_FILE"
+  done
+
+  echo "✓ Reporte generado: $TECH_MISMATCHES_FILE"
+  return 0
+}
+
+# Calculate and format technology-adoption distribution
+# Returns: formatted text via stdout
+calculate_tech_adoption_distribution() {
+  local output=""
+
+  # For each technology that has repos in CSV
+  for tech in maven gradle node go flutter other; do
+    local tech_count=${TECH_IN_CSV_COUNT[$tech]:-0}
+
+    if (( tech_count == 0 )); then
+      continue
+    fi
+
+    # Capitalize tech name for display
+    local tech_display="${tech:u:0:1}${tech:1}"
+
+    output+="${tech_display} ($tech_count repos in CSV):\n"
+
+    # Find all adoption states for this tech
+    typeset -A adoption_states
+    for key in "${(@k)TECH_ADOPTION_COUNTERS}"; do
+      if [[ "$key" == "$tech:"* ]]; then
+        local adoption="${key#*:}"
+        local count=${TECH_ADOPTION_COUNTERS[$key]}
+        adoption_states[$adoption]=$count
+      fi
+    done
+
+    # Sort adoption states by count (descending) and display
+    for adoption in "${(@k)adoption_states}"; do
+      local count=${adoption_states[$adoption]}
+      local percentage=$(printf "%.1f" $(echo "scale=2; $count * 100 / $tech_count" | bc))
+      output+="  • $adoption: $count repos ($percentage%)\n"
+    done
+
+    output+="\n"
+  done
+
+  echo "$output"
+}
+
+# Generate technology-adoption distribution report file
+# Returns: 0 on success
+generate_tech_adoption_distribution_report() {
+  if (( repos_in_csv == 0 )); then
+    return 0
+  fi
+
+  echo "📄 Generando reporte de distribución tecnología-adopción..."
+
+  : > "$TECH_ADOPTION_DIST_FILE"  # Clear/create file
+  cat >> "$TECH_ADOPTION_DIST_FILE" <<EOF
+# Distribución de Adopción por Tecnología
+# Fecha: $(date '+%Y-%m-%d %H:%M:%S')
+# Total de repositorios en CSV: $repos_in_csv
+
+## Resumen Global de Adopción
+
+EOF
+
+  # Global adoption distribution
+  for adoption in "${(@k)ADOPTION_COUNTERS}"; do
+    local count=${ADOPTION_COUNTERS[$adoption]}
+    local percentage=$(printf "%.1f" $(echo "scale=2; $count * 100 / $repos_in_csv" | bc))
+    echo "$adoption: $count repos ($percentage%)" >> "$TECH_ADOPTION_DIST_FILE"
+  done
+
+  cat >> "$TECH_ADOPTION_DIST_FILE" <<EOF
+
+## Distribución por Tecnología
+
+EOF
+
+  # Technology-specific distribution
+  calculate_tech_adoption_distribution >> "$TECH_ADOPTION_DIST_FILE"
+
+  echo "✓ Reporte generado: $TECH_ADOPTION_DIST_FILE"
+  return 0
+}
+
+# Display CSV metrics summary
+# Returns: formatted summary text via stdout
+display_csv_metrics_summary() {
+  if [[ -z "$CSV_FILE" || $repos_in_csv -eq 0 ]]; then
+    return 0
+  fi
+
+  echo "==============================="
+  echo "Métricas de CSV"
+  echo "==============================="
+  echo "Total de repositorios analizados: $total_repos"
+  echo "Repositorios encontrados en CSV: $repos_in_csv"
+  echo "Repositorios NO en CSV: $not_in_csv_repos"
+
+  if (( repos_in_csv > 0 )); then
+    echo ""
+    echo "-------------------------------"
+    echo "Distribución Global de Adopción:"
+    for adoption in "${(@k)ADOPTION_COUNTERS}"; do
+      local count=${ADOPTION_COUNTERS[$adoption]}
+      local percentage=$(printf "%.1f" $(echo "scale=2; $count * 100 / $repos_in_csv" | bc))
+      echo "  - $adoption: $count ($percentage%)"
+    done
+
+    local total_with_tech=$((tech_matches + tech_mismatches))
+    if (( total_with_tech > 0 )); then
+      echo ""
+      echo "-------------------------------"
+      echo "Precisión de Anotación de Tecnología:"
+      echo "  - Total con tecnología anotada: $total_with_tech"
+      echo "  - Correctamente anotados: $tech_matches ($(printf "%.1f" $(echo "scale=2; $tech_matches * 100 / $total_with_tech" | bc))%)"
+      echo "  - Anotaciones incorrectas: $tech_mismatches ($(printf "%.1f" $(echo "scale=2; $tech_mismatches * 100 / $total_with_tech" | bc))%)"
+    fi
+
+    echo ""
+    echo "-------------------------------"
+    echo "Distribución por Tecnología:"
+    echo ""
+    calculate_tech_adoption_distribution
+  fi
+
+  echo "==============================="
+}
+
+#================================================================
 # MAIN EXECUTION
 #================================================================
 
@@ -564,6 +922,15 @@ else
   echo "🆕 No se encontró checkpoint. Iniciando análisis desde cero..."
 fi
 echo ""
+
+# Parse CSV file if provided
+if [[ -n "$CSV_FILE" ]]; then
+  if ! parse_csv_file "$CSV_FILE"; then
+    echo "⚠️  Advertencia: No se pudo parsear el archivo CSV. Continuando sin datos de CSV."
+    CSV_FILE=""  # Disable CSV processing
+  fi
+  echo ""
+fi
 
 # Clear/initialize output files when starting from scratch
 if [[ "$RESUME_FROM_CHECKPOINT" != "true" ]]; then
@@ -816,6 +1183,54 @@ for REPO in $REPOS; do
     echo "  - Tipo de proyecto: No determinado"
     other_repos=$((other_repos + 1))
     echo "    -> Contador 'Otros': $other_repos"
+  fi
+
+  # Track CSV data if available
+  if [[ -n "$CSV_FILE" ]]; then
+    # Normalize the repository URL for comparison
+    NORMALIZED_REPO_URL=$(normalize_repo_url "$REPO_URL")
+
+    # Check if this repo is in the CSV
+    if [[ -n "${CSV_ADOPTION[$NORMALIZED_REPO_URL]:-}" ]]; then
+      repos_in_csv=$((repos_in_csv + 1))
+      local csv_adoption="${CSV_ADOPTION[$NORMALIZED_REPO_URL]}"
+      local csv_tech="${CSV_TECHNOLOGY[$NORMALIZED_REPO_URL]}"
+
+      echo "  📊 Repositorio encontrado en CSV:"
+      echo "     Adopción: $csv_adoption"
+      echo "     Tecnología (CSV): $csv_tech"
+
+      # Track adoption globally
+      if [[ -n "$csv_adoption" ]]; then
+        ADOPTION_COUNTERS[$csv_adoption]=$((${ADOPTION_COUNTERS[$csv_adoption]:-0} + 1))
+      fi
+
+      # Track technology + adoption combination
+      if [[ -n "$PROJECT_TYPE" && -n "$csv_adoption" ]]; then
+        local key="${PROJECT_TYPE}:${csv_adoption}"
+        TECH_ADOPTION_COUNTERS[$key]=$((${TECH_ADOPTION_COUNTERS[$key]:-0} + 1))
+        TECH_IN_CSV_COUNT[$PROJECT_TYPE]=$((${TECH_IN_CSV_COUNT[$PROJECT_TYPE]:-0} + 1))
+      fi
+
+      # Compare technology annotations
+      if [[ -n "$csv_tech" && -n "$PROJECT_TYPE" ]]; then
+        local normalized_csv_tech=$(normalize_tech "$csv_tech")
+        echo "     Tecnología detectada: $PROJECT_TYPE"
+        echo "     Tecnología normalizada (CSV): $normalized_csv_tech"
+
+        if [[ "$normalized_csv_tech" == "$PROJECT_TYPE" ]]; then
+          echo "     ✓ Tecnología coincide"
+          tech_matches=$((tech_matches + 1))
+        else
+          echo "     ⚠ Tecnología NO coincide"
+          tech_mismatches=$((tech_mismatches + 1))
+          TECH_MISMATCHES[$REPO]="CSV: $csv_tech ($normalized_csv_tech) vs Detected: $PROJECT_TYPE"
+        fi
+      fi
+    else
+      not_in_csv_repos=$((not_in_csv_repos + 1))
+      echo "  ℹ️  Repositorio NO encontrado en CSV"
+    fi
   fi
 
   # List workflow files in .github/workflows
@@ -1094,6 +1509,18 @@ if (( failed_repos > 0 )); then
   echo "   Total de repositorios fallidos: $failed_repos"
 fi
 
+# Generate CSV reports if applicable
+if [[ -n "$CSV_FILE" && $repos_in_csv -gt 0 ]]; then
+  echo "\n==============================="
+  echo "Generando reportes de CSV..."
+  echo "==============================="
+
+  generate_tech_mismatches_report
+  generate_tech_adoption_distribution_report
+
+  echo ""
+fi
+
 # Calculate execution time
 END_TIME=$(date +%s)
 END_TIME_FORMATTED=$(date '+%Y-%m-%d %H:%M:%S')
@@ -1157,7 +1584,17 @@ echo "  Sin CI unificado: *-repos-without-ci.yml"
 if (( failed_repos > 0 )); then
   echo "  Repositorios fallidos: $FAILED_REPOS_FILE"
 fi
+if [[ -n "$CSV_FILE" && $repos_in_csv -gt 0 ]]; then
+  echo "  Discrepancias de tecnología: $TECH_MISMATCHES_FILE"
+  echo "  Distribución adopción: $TECH_ADOPTION_DIST_FILE"
+fi
 echo "==============================="
+
+# Display CSV metrics if available
+if [[ -n "$CSV_FILE" ]]; then
+  echo ""
+  display_csv_metrics_summary
+fi
 
 # Prepare Slack summary message
 TOTAL_WITH_CI=$((maven_ci_repos + gradle_ci_repos + node_ci_repos + go_ci_repos + flutter_ci_repos))
@@ -1181,6 +1618,62 @@ SLACK_MESSAGE=$(cat <<EOF
 EOF
 )
 
+# Add CSV metrics to Slack message if available
+if [[ -n "$CSV_FILE" && $repos_in_csv -gt 0 ]]; then
+  SLACK_MESSAGE+=$'\n\n📊 *Métricas de CSV:*'
+  SLACK_MESSAGE+=$'\n'"• Repos en CSV: $repos_in_csv / $total_repos"
+  SLACK_MESSAGE+=$'\n'"• Repos NO en CSV: $not_in_csv_repos"
+
+  # Add adoption distribution
+  if (( ${#ADOPTION_COUNTERS[@]} > 0 )); then
+    SLACK_MESSAGE+=$'\n\n*Distribución de Adopción:*'
+    for adoption in "${(@k)ADOPTION_COUNTERS}"; do
+      local count=${ADOPTION_COUNTERS[$adoption]}
+      local percentage=$(printf "%.1f" $(echo "scale=2; $count * 100 / $repos_in_csv" | bc))
+      SLACK_MESSAGE+=$'\n'"• $adoption: $count ($percentage%)"
+    done
+  fi
+
+  # Add technology accuracy
+  local total_with_tech=$((tech_matches + tech_mismatches))
+  if (( total_with_tech > 0 )); then
+    local accuracy=$(printf "%.1f" $(echo "scale=2; $tech_matches * 100 / $total_with_tech" | bc))
+    SLACK_MESSAGE+=$'\n\n'"*Precisión de Tecnología:* $accuracy% ($tech_matches/$total_with_tech correctos)"
+    if (( tech_mismatches > 0 )); then
+      SLACK_MESSAGE+=$'\n'"⚠️ $tech_mismatches discrepancias detectadas"
+    fi
+  fi
+
+  # Add technology-specific adoption breakdown (top 3 technologies)
+  SLACK_MESSAGE+=$'\n\n'"*Adopción por Tecnología:*"
+  for tech in maven gradle node go flutter; do
+    local tech_count=${TECH_IN_CSV_COUNT[$tech]:-0}
+    if (( tech_count == 0 )); then
+      continue
+    fi
+
+    local tech_display="${tech:u:0:1}${tech:1}"
+    SLACK_MESSAGE+=$'\n'"• $tech_display ($tech_count repos):"
+
+    # Find adoption states for this tech
+    local found_adoption=false
+    for key in "${(@k)TECH_ADOPTION_COUNTERS}"; do
+      if [[ "$key" == "$tech:"* ]]; then
+        local adoption="${key#*:}"
+        local count=${TECH_ADOPTION_COUNTERS[$key]}
+        local percentage=$(printf "%.0f" $(echo "scale=2; $count * 100 / $tech_count" | bc))
+        SLACK_MESSAGE+=$' '"$adoption: ${percentage}%,"
+        found_adoption=true
+      fi
+    done
+
+    # Remove trailing comma
+    if [[ "$found_adoption" == "true" ]]; then
+      SLACK_MESSAGE="${SLACK_MESSAGE%,}"
+    fi
+  done
+fi
+
 # Add failure information if applicable
 if (( failed_repos > 0 )); then
   SLACK_MESSAGE+=$'\n\n⚠️ *Repositorios que fallaron:* '$failed_repos
@@ -1201,10 +1694,23 @@ if (( failed_repos > 0 )); then
   ATTACH_FILES="$ATTACH_FILES $FAILED_REPOS_FILE"
 fi
 
+# Add CSV report files if they exist
+if [[ -n "$CSV_FILE" && $repos_in_csv -gt 0 ]]; then
+  if [[ -f "$TECH_ADOPTION_DIST_FILE" ]]; then
+    ATTACH_FILES="$ATTACH_FILES $TECH_ADOPTION_DIST_FILE"
+  fi
+  if [[ -f "$TECH_MISMATCHES_FILE" ]]; then
+    ATTACH_FILES="$ATTACH_FILES $TECH_MISMATCHES_FILE"
+  fi
+fi
+
 # Prepare metadata fields for Slack
 SLACK_FIELDS="Total:$total_repos,Con CI:$TOTAL_WITH_CI,Sin CI:$TOTAL_WITHOUT_CI,Archivados:$archived_repos"
 if (( failed_repos > 0 )); then
   SLACK_FIELDS+=",Fallidos:$failed_repos"
+fi
+if [[ -n "$CSV_FILE" && $repos_in_csv -gt 0 ]]; then
+  SLACK_FIELDS+=",En CSV:$repos_in_csv"
 fi
 SLACK_FIELDS+=",Duración:${DURATION_MIN}m ${DURATION_SEC}s"
 

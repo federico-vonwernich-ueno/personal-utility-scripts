@@ -1,0 +1,8 @@
+Repositorio,Adopcion,Tecnología
+https://github.com/example-org/api-service,Adoptado,Maven
+https://github.com/example-org/web-frontend,En Progreso,Node.js
+https://github.com/example-org/mobile-app,Adoptado,Flutter
+https://github.com/example-org/backend-service,Bloqueado,Golang
+https://github.com/example-org/data-processor,Adoptado,Java/Maven
+https://github.com/example-org/admin-panel,Pendiente,Node.js
+https://github.com/example-org/payment-gateway,Adoptado,Gradle

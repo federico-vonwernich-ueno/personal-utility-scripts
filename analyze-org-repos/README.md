@@ -24,16 +24,17 @@ A Zsh script that audits all repositories in a GitHub organization to identify w
 - Zsh shell
 - GitHub CLI (`gh`) - [Setup guide](../docs/GITHUB_SETUP.md)
 - `jq` - JSON processor
-- Python 3 - For Slack notifications
+- `bc` - Basic calculator (for percentage calculations)
+- Python 3 - For Slack notifications and CSV parsing
 - Slack Bot Token (optional) - [Setup guide](../docs/SLACK_INTEGRATION.md)
 
 Install tools:
 ```bash
 # macOS
-brew install gh jq
+brew install gh jq bc
 
 # Ubuntu/Debian
-sudo apt install jq
+sudo apt install jq bc
 ```
 
 ### Basic Usage
@@ -44,6 +45,12 @@ sudo apt install jq
 
 # Limit to first 10 repos (for testing)
 ./analyze-org-repos-with-slack.sh my-organization 10
+
+# Analyze with CSV metrics tracking
+./analyze-org-repos-with-slack.sh my-organization --csv-file repos-data.csv
+
+# Combined: limit and CSV
+./analyze-org-repos-with-slack.sh my-organization 10 --csv-file repos-data.csv
 ```
 
 ### With Slack Notifications
@@ -68,17 +75,36 @@ export SLACK_DRY_RUN=1
 The organization name is a required command-line parameter:
 
 ```bash
-./analyze-org-repos-with-slack.sh <organization-name> [limit]
+./analyze-org-repos-with-slack.sh <organization-name> [limit] [--csv-file <path>]
 ```
 
 **Arguments**:
 - `organization-name` (required): GitHub organization to analyze
 - `limit` (optional): Number of repositories to analyze (for testing)
+- `--csv-file` (optional): Path to CSV file for adoption/technology tracking
 
 **Environment Variables**:
 - `SLACK_BOT_TOKEN`: Slack bot token (optional, see [Slack guide](../docs/SLACK_INTEGRATION.md))
 - `SLACK_CHANNEL`: Slack channel for notifications (optional)
 - `SLACK_DRY_RUN`: Enable dry-run mode (optional)
+
+### CSV File Format
+
+The CSV file should contain the following columns (case-insensitive):
+
+- **Repositorio**: Full GitHub repository URL (e.g., `https://github.com/org/repo-name`)
+- **Adopcion** (or Adopción): Adoption state (e.g., "Adoptado", "Bloqueado", "En Progreso")
+- **Tecnología**: Technology annotation (e.g., "Maven", "Node.js", "Golang")
+
+Example CSV:
+```csv
+Repositorio,Adopcion,Tecnología
+https://github.com/my-org/api-service,Adoptado,Maven
+https://github.com/my-org/web-app,En Progreso,Node.js
+https://github.com/my-org/backend,Bloqueado,Golang
+```
+
+**Note**: The script normalizes repository URLs (handles http/https, trailing slashes, .git suffix) and technology names (case-insensitive matching) for robust comparison.
 
 ## Output Files
 
@@ -103,19 +129,56 @@ Each YAML file contains:
   branch: main
 ```
 
+### CSV Analysis Reports (when --csv-file is provided)
+- `technology-mismatches.txt` - Repositories where CSV technology annotation doesn't match detected technology
+- `technology-adoption-distribution.txt` - Detailed breakdown of adoption states by technology
+
 ### Logs
 - `logs/analyze-org-repos-YYYYMMDD-HHMMSS.log` - Timestamped execution logs
 
 ## How It Works
 
 1. Fetches all repositories from the specified GitHub organization using GraphQL API
-2. For each repository:
+2. Parses CSV file (if provided) and loads adoption/technology data
+3. For each repository:
    - Identifies project type by detecting marker files (`pom.xml`, `package.json`, etc.)
    - Lists all YAML workflow files in `.github/workflows/`
    - Downloads and analyzes each workflow file
    - Checks for references to reusable CI workflows
-3. Generates YAML reports for repositories with and without unified CI
-4. Sends Slack notifications with results (if configured)
+   - If CSV provided: matches repo against CSV data, tracks adoption state, validates technology annotation
+4. Generates YAML reports for repositories with and without unified CI
+5. Generates CSV analysis reports (if CSV provided):
+   - Technology mismatches between CSV annotation and detected technology
+   - Adoption distribution globally and per technology
+6. Sends Slack notifications with results (if configured)
+
+### CSV Analysis Features
+
+When a CSV file is provided with `--csv-file`, the script performs additional analysis:
+
+**Adoption Tracking**:
+- Tracks all unique adoption states found in CSV
+- Calculates global adoption distribution (percentages)
+- Breaks down adoption by detected technology (Maven, Gradle, Node, Go, Flutter)
+
+**Technology Validation**:
+- Compares CSV technology annotation against detected technology
+- Reports accuracy metrics (correct vs mismatched annotations)
+- Generates detailed report of all technology mismatches
+
+**Example Metrics Output**:
+```
+Maven (15 repos in CSV):
+  • Adoptado: 10 repos (66.7%)
+  • Bloqueado: 3 repos (20.0%)
+  • En Progreso: 2 repos (13.3%)
+
+Node (8 repos in CSV):
+  • Adoptado: 6 repos (75.0%)
+  • Pendiente: 2 repos (25.0%)
+
+Technology Accuracy: 85.5% (47/55 correct)
+```
 
 ### Rate Limiting
 
