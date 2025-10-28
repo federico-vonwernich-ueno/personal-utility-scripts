@@ -775,7 +775,7 @@ calculate_tech_adoption_distribution() {
     fi
 
     # Capitalize tech name for display
-    local tech_display="${tech:u:0:1}${tech:1}"
+    local tech_display="${(U)tech:0:1}${tech:1}"
 
     output+="${tech_display} ($tech_count repos in CSV):\n"
 
@@ -1652,7 +1652,7 @@ if [[ -n "$CSV_FILE" && $repos_in_csv -gt 0 ]]; then
       continue
     fi
 
-    local tech_display="${tech:u:0:1}${tech:1}"
+    local tech_display="${(U)tech:0:1}${tech:1}"
     SLACK_MESSAGE+=$'\n'"• $tech_display ($tech_count repos):"
 
     # Find adoption states for this tech
