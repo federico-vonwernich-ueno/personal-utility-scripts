@@ -130,7 +130,7 @@ Each YAML file contains:
 ```
 
 ### CSV Analysis Reports (when --csv-file is provided)
-- `technology-mismatches.txt` - Repositories where CSV technology annotation doesn't match detected technology
+- `technology-mismatches.txt` - Repositories where CSV technology annotation doesn't match detected technology (grouped by detected technology for easy scanning)
 - `technology-adoption-distribution.txt` - Global adoption summary and per-technology percentages
 - `maven-adoption.txt` - List of Maven repositories grouped by adoption state
 - `gradle-adoption.txt` - List of Gradle repositories grouped by adoption state
@@ -152,6 +152,28 @@ CI Cambios aplicados (67 repos - 64.4%):
 No (18 repos - 17.3%):
 - https://github.com/org/legacy-app
 ...
+```
+
+The technology mismatches file uses a grouped format:
+```
+# Discrepancias en Anotación de Tecnología
+# Fecha: 2025-10-28 14:30:00
+# Total: 15 discrepancias (12.5% error rate)
+
+════════════════════════════════════════════════════════════════════
+
+Detectado: Node (pero CSV dice otra cosa) - 5 repos
+────────────────────────────────────────────────────────────────────
+CSV: "Maven" (3 repos):
+  • api-gateway [Adoptado]
+    https://github.com/org/api-gateway
+
+  • user-service [En Progreso]
+    https://github.com/org/user-service
+
+CSV: "Golang" (2 repos):
+  • frontend-app [Bloqueado]
+    https://github.com/org/frontend-app
 ```
 
 ### Logs

@@ -97,6 +97,7 @@ typeset -A TECH_ADOPTION_COUNTERS  # Technology+adoption combo counts (e.g., "ma
 typeset -A TECH_IN_CSV_COUNT   # Count of each tech found in CSV
 typeset -A TECH_MISMATCHES     # Maps repo -> "CSV_tech vs Detected_tech"
 typeset -A TECH_ADOPTION_REPOS # Maps tech:adoption -> space-separated list of repo URLs
+typeset -A CSV_COUNTED_REPOS   # Deduplication: tracks which repos have been counted for CSV metrics
 tech_matches=0
 tech_mismatches=0
 repos_in_csv=0
@@ -540,6 +541,10 @@ FLUTTER_CI_REPOS=$flutter_ci_repos
 ARCHIVED_REPOS=$archived_repos
 FAILED_REPOS_COUNT=$failed_repos
 TOTAL_REPOS=$total_repos
+TECH_MATCHES=$tech_matches
+TECH_MISMATCHES=$tech_mismatches
+REPOS_IN_CSV=$repos_in_csv
+NOT_IN_CSV_REPOS=$not_in_csv_repos
 TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
 EOF
 
@@ -554,6 +559,58 @@ EOF
       error_msg="${error_msg//\"/\\\"}"
       echo "FAILED_REPOS[\"$repo\"]=\"$error_msg\"" >> "$CHECKPOINT_FILE"
     done
+  fi
+
+  # Save CSV-related associative arrays
+  if [[ -n "$CSV_FILE" ]]; then
+    echo "" >> "$CHECKPOINT_FILE"
+    echo "# CSV tracking data" >> "$CHECKPOINT_FILE"
+
+    # Save ADOPTION_COUNTERS
+    if (( ${#ADOPTION_COUNTERS[@]} > 0 )); then
+      echo "typeset -A ADOPTION_COUNTERS" >> "$CHECKPOINT_FILE"
+      for key in "${(@k)ADOPTION_COUNTERS}"; do
+        local val="${ADOPTION_COUNTERS[$key]}"
+        echo "ADOPTION_COUNTERS[\"${key//\"/\\\"}\"]=\$val" >> "$CHECKPOINT_FILE"
+      done
+    fi
+
+    # Save TECH_ADOPTION_COUNTERS
+    if (( ${#TECH_ADOPTION_COUNTERS[@]} > 0 )); then
+      echo "typeset -A TECH_ADOPTION_COUNTERS" >> "$CHECKPOINT_FILE"
+      for key in "${(@k)TECH_ADOPTION_COUNTERS}"; do
+        local val="${TECH_ADOPTION_COUNTERS[$key]}"
+        echo "TECH_ADOPTION_COUNTERS[\"${key//\"/\\\"}\"]=\$val" >> "$CHECKPOINT_FILE"
+      done
+    fi
+
+    # Save TECH_IN_CSV_COUNT
+    if (( ${#TECH_IN_CSV_COUNT[@]} > 0 )); then
+      echo "typeset -A TECH_IN_CSV_COUNT" >> "$CHECKPOINT_FILE"
+      for key in "${(@k)TECH_IN_CSV_COUNT}"; do
+        local val="${TECH_IN_CSV_COUNT[$key]}"
+        echo "TECH_IN_CSV_COUNT[\"${key//\"/\\\"}\"]=\$val" >> "$CHECKPOINT_FILE"
+      done
+    fi
+
+    # Save TECH_MISMATCHES
+    if (( ${#TECH_MISMATCHES[@]} > 0 )); then
+      echo "typeset -A TECH_MISMATCHES" >> "$CHECKPOINT_FILE"
+      for key in "${(@k)TECH_MISMATCHES}"; do
+        local val="${TECH_MISMATCHES[$key]}"
+        echo "TECH_MISMATCHES[\"${key//\"/\\\"}\"]=\\"${val//\"/\\\"}\\"" >> "$CHECKPOINT_FILE"
+      done
+    fi
+
+    # Save CSV_COUNTED_REPOS (deduplication tracking)
+    if (( ${#CSV_COUNTED_REPOS[@]} > 0 )); then
+      echo "typeset -A CSV_COUNTED_REPOS" >> "$CHECKPOINT_FILE"
+      for key in "${(@k)CSV_COUNTED_REPOS}"; do
+        echo "CSV_COUNTED_REPOS[\"${key//\"/\\\"}\"]=1" >> "$CHECKPOINT_FILE"
+      done
+    fi
+
+    # Note: We don't save TECH_ADOPTION_REPOS as it's large and can be regenerated
   fi
 
   echo "💾 Progress saved to checkpoint file: $CHECKPOINT_FILE"
@@ -571,11 +628,28 @@ load_checkpoint() {
       failed_repos=$FAILED_REPOS_COUNT
     fi
 
+    # Restore CSV-related counters from checkpoint
+    if [[ -n "${TECH_MATCHES:-}" ]]; then
+      tech_matches=$TECH_MATCHES
+    fi
+    if [[ -n "${TECH_MISMATCHES:-}" ]]; then
+      tech_mismatches=$TECH_MISMATCHES
+    fi
+    if [[ -n "${REPOS_IN_CSV:-}" ]]; then
+      repos_in_csv=$REPOS_IN_CSV
+    fi
+    if [[ -n "${NOT_IN_CSV_REPOS:-}" ]]; then
+      not_in_csv_repos=$NOT_IN_CSV_REPOS
+    fi
+
     echo "   Last processed: $LAST_PROCESSED_REPO"
     echo "   Timestamp: $TIMESTAMP"
     echo "   Total repos processed: $TOTAL_REPOS"
     if (( failed_repos > 0 )); then
       echo "   Failed repos: $failed_repos"
+    fi
+    if (( repos_in_csv > 0 )); then
+      echo "   Repos in CSV: $repos_in_csv"
     fi
     return 0
   fi
@@ -735,15 +809,15 @@ generate_tech_mismatches_report() {
 
   echo "📄 Generando reporte de discrepancias de tecnología..."
 
-  : > "$TECH_MISMATCHES_FILE"  # Clear/create file
-  cat >> "$TECH_MISMATCHES_FILE" <<EOF
-# Discrepancias en Anotación de Tecnología
-# Fecha: $(date '+%Y-%m-%d %H:%M:%S')
-# Total de discrepancias: $tech_mismatches
+  # Calculate error rate
+  local error_rate=0
+  if (( repos_in_csv > 0 )); then
+    error_rate=$(printf "%.1f" $(echo "scale=2; $tech_mismatches * 100 / $repos_in_csv" | bc))
+  fi
 
-REPOSITORIO | URL | TECNOLOGÍA CSV | TECNOLOGÍA DETECTADA | ADOPCIÓN
-------------|-----|----------------|---------------------|----------
-EOF
+  # First pass: collect and organize data
+  typeset -A by_detected  # Maps detected_tech to space-separated list of repos
+  typeset -A repo_data    # Maps repo to "detected|csv|adoption|url"
 
   for repo in "${(@k)TECH_MISMATCHES}"; do
     local repo_url="https://github.com/$ORG/$repo"
@@ -755,7 +829,78 @@ EOF
     local csv_tech=$(echo "$mismatch_info" | sed -n 's/^CSV: \(.*\) (.*) vs Detected: .*$/\1/p')
     local detected_tech=$(echo "$mismatch_info" | sed -n 's/^.* vs Detected: \(.*\)$/\1/p')
 
-    echo "$repo | $repo_url | $csv_tech | $detected_tech | $adoption" >> "$TECH_MISMATCHES_FILE"
+    # Store repo data
+    repo_data[$repo]="${detected_tech}|${csv_tech}|${adoption}|${repo_url}"
+
+    # Add to detected tech list
+    if [[ -z "${by_detected[$detected_tech]:-}" ]]; then
+      by_detected[$detected_tech]="$repo"
+    else
+      by_detected[$detected_tech]="${by_detected[$detected_tech]} $repo"
+    fi
+  done
+
+  # Write header
+  : > "$TECH_MISMATCHES_FILE"  # Clear/create file
+  cat >> "$TECH_MISMATCHES_FILE" <<EOF
+# Discrepancias en Anotación de Tecnología
+# Fecha: $(date '+%Y-%m-%d %H:%M:%S')
+# Total: $tech_mismatches discrepancias ($error_rate% error rate)
+
+EOF
+
+  # Iterate through each detected technology
+  for detected_tech in "${(@k)by_detected}"; do
+    # Capitalize detected tech name for display
+    local tech_display="${(U)detected_tech:0:1}${detected_tech:1}"
+
+    # Get repos for this detected tech
+    local repos_list="${by_detected[$detected_tech]}"
+    local repo_count=$(echo "$repos_list" | wc -w)
+
+    cat >> "$TECH_MISMATCHES_FILE" <<EOF
+════════════════════════════════════════════════════════════════════
+
+Detectado: $tech_display (pero CSV dice otra cosa) - $repo_count repos
+────────────────────────────────────────────────────────────────────
+EOF
+
+    # Group by CSV tech within this detected tech
+    typeset -A by_csv
+    for repo in ${=repos_list}; do
+      local data="${repo_data[$repo]}"
+      local detected=$(echo "$data" | cut -d'|' -f1)
+      local csv=$(echo "$data" | cut -d'|' -f2)
+
+      if [[ -z "${by_csv[$csv]:-}" ]]; then
+        by_csv[$csv]="$repo"
+      else
+        by_csv[$csv]="${by_csv[$csv]} $repo"
+      fi
+    done
+
+    # Output each CSV tech subgroup
+    for csv_tech in "${(@k)by_csv}"; do
+      local csv_repos="${by_csv[$csv_tech]}"
+      local csv_count=$(echo "$csv_repos" | wc -w)
+
+      echo "CSV: \"$csv_tech\" ($csv_count repos):" >> "$TECH_MISMATCHES_FILE"
+
+      for repo in ${=csv_repos}; do
+        local data="${repo_data[$repo]}"
+        local adoption=$(echo "$data" | cut -d'|' -f3)
+        local url=$(echo "$data" | cut -d'|' -f4)
+
+        cat >> "$TECH_MISMATCHES_FILE" <<EOF
+  • $repo [$adoption]
+    $url
+
+EOF
+      done
+    done
+
+    # Clear by_csv for next detected tech
+    unset by_csv
   done
 
   echo "✓ Reporte generado: $TECH_MISMATCHES_FILE"
@@ -1261,7 +1406,6 @@ for REPO in $REPOS; do
 
     # Check if this repo is in the CSV
     if [[ -n "${CSV_ADOPTION[$NORMALIZED_REPO_URL]:-}" ]]; then
-      repos_in_csv=$((repos_in_csv + 1))
       local csv_adoption="${CSV_ADOPTION[$NORMALIZED_REPO_URL]}"
       local csv_tech="${CSV_TECHNOLOGY[$NORMALIZED_REPO_URL]}"
 
@@ -1269,19 +1413,30 @@ for REPO in $REPOS; do
       echo "     Adopción: $csv_adoption"
       echo "     Tecnología (CSV): $csv_tech"
 
-      # Track adoption globally
-      if [[ -n "$csv_adoption" ]]; then
-        ADOPTION_COUNTERS[$csv_adoption]=$((${ADOPTION_COUNTERS[$csv_adoption]:-0} + 1))
-      fi
+      # DEFENSIVE CHECK: Prevent double-counting the same repo
+      if [[ -z "${CSV_COUNTED_REPOS[$NORMALIZED_REPO_URL]:-}" ]]; then
+        # Mark this repo as counted
+        CSV_COUNTED_REPOS[$NORMALIZED_REPO_URL]="1"
 
-      # Track technology + adoption combination
-      if [[ -n "$PROJECT_TYPE" && -n "$csv_adoption" ]]; then
-        local key="${PROJECT_TYPE}:${csv_adoption}"
-        TECH_ADOPTION_COUNTERS[$key]=$((${TECH_ADOPTION_COUNTERS[$key]:-0} + 1))
-        TECH_IN_CSV_COUNT[$PROJECT_TYPE]=$((${TECH_IN_CSV_COUNT[$PROJECT_TYPE]:-0} + 1))
+        # Track repos in CSV count
+        repos_in_csv=$((repos_in_csv + 1))
 
-        # Track repo URL for this tech+adoption combination
-        TECH_ADOPTION_REPOS[$key]+="$REPO_URL "
+        # Track adoption globally
+        if [[ -n "$csv_adoption" ]]; then
+          ADOPTION_COUNTERS[$csv_adoption]=$((${ADOPTION_COUNTERS[$csv_adoption]:-0} + 1))
+        fi
+
+        # Track technology + adoption combination
+        if [[ -n "$PROJECT_TYPE" && -n "$csv_adoption" ]]; then
+          local key="${PROJECT_TYPE}:${csv_adoption}"
+          TECH_ADOPTION_COUNTERS[$key]=$((${TECH_ADOPTION_COUNTERS[$key]:-0} + 1))
+          TECH_IN_CSV_COUNT[$PROJECT_TYPE]=$((${TECH_IN_CSV_COUNT[$PROJECT_TYPE]:-0} + 1))
+
+          # Track repo URL for this tech+adoption combination
+          TECH_ADOPTION_REPOS[$key]+="$REPO_URL "
+        fi
+      else
+        echo "     ⚠️  Ya contado (evitando duplicado)"
       fi
 
       # Compare technology annotations
