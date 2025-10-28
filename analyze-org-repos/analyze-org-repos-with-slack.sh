@@ -96,6 +96,7 @@ typeset -A ADOPTION_COUNTERS   # Global adoption state counts
 typeset -A TECH_ADOPTION_COUNTERS  # Technology+adoption combo counts (e.g., "maven:Adoptado")
 typeset -A TECH_IN_CSV_COUNT   # Count of each tech found in CSV
 typeset -A TECH_MISMATCHES     # Maps repo -> "CSV_tech vs Detected_tech"
+typeset -A TECH_ADOPTION_REPOS # Maps tech:adoption -> space-separated list of repo URLs
 tech_matches=0
 tech_mismatches=0
 repos_in_csv=0
@@ -841,6 +842,74 @@ EOF
   return 0
 }
 
+# Generate per-technology adoption reports with repository listings
+# Creates one file per technology showing which repos have which adoption state
+# Returns: 0 on success
+generate_per_tech_adoption_reports() {
+  if (( repos_in_csv == 0 )); then
+    return 0
+  fi
+
+  echo "📄 Generando reportes individuales por tecnología..."
+
+  # For each technology that has repos in CSV
+  for tech in maven gradle node go flutter other; do
+    local tech_count=${TECH_IN_CSV_COUNT[$tech]:-0}
+
+    if (( tech_count == 0 )); then
+      continue
+    fi
+
+    # Capitalize tech name for display
+    local tech_display="${(U)tech:0:1}${tech:1}"
+    local output_file="${tech}-adoption.txt"
+
+    # Create file with header
+    : > "$output_file"
+    cat >> "$output_file" <<EOF
+# ${tech_display} Adoption Report
+# Total: $tech_count repos
+# Generated: $(date '+%Y-%m-%d %H:%M:%S')
+
+EOF
+
+    # Find all adoption states for this tech and generate report
+    typeset -A adoption_states
+    for key in "${(@k)TECH_ADOPTION_COUNTERS}"; do
+      if [[ "$key" == "$tech:"* ]]; then
+        local adoption="${key#*:}"
+        local count=${TECH_ADOPTION_COUNTERS[$key]}
+        adoption_states[$adoption]=$count
+      fi
+    done
+
+    # For each adoption state, list the repositories
+    for adoption in "${(@k)adoption_states}"; do
+      local count=${adoption_states[$adoption]}
+      local percentage=$(printf "%.1f" $(echo "scale=2; $count * 100 / $tech_count" | bc))
+
+      echo "$adoption ($count repos - $percentage%):" >> "$output_file"
+
+      # Get repos for this tech:adoption combination
+      local key="${tech}:${adoption}"
+      local repos_list="${TECH_ADOPTION_REPOS[$key]:-}"
+
+      if [[ -n "$repos_list" ]]; then
+        # Split space-separated URLs and format as list
+        for repo_url in ${(z)repos_list}; do
+          echo "- $repo_url" >> "$output_file"
+        done
+      fi
+
+      echo "" >> "$output_file"
+    done
+
+    echo "  ✓ $output_file"
+  done
+
+  return 0
+}
+
 # Display CSV metrics summary
 # Returns: formatted summary text via stdout
 display_csv_metrics_summary() {
@@ -1210,6 +1279,9 @@ for REPO in $REPOS; do
         local key="${PROJECT_TYPE}:${csv_adoption}"
         TECH_ADOPTION_COUNTERS[$key]=$((${TECH_ADOPTION_COUNTERS[$key]:-0} + 1))
         TECH_IN_CSV_COUNT[$PROJECT_TYPE]=$((${TECH_IN_CSV_COUNT[$PROJECT_TYPE]:-0} + 1))
+
+        # Track repo URL for this tech+adoption combination
+        TECH_ADOPTION_REPOS[$key]+="$REPO_URL "
       fi
 
       # Compare technology annotations
@@ -1517,6 +1589,7 @@ if [[ -n "$CSV_FILE" && $repos_in_csv -gt 0 ]]; then
 
   generate_tech_mismatches_report
   generate_tech_adoption_distribution_report
+  generate_per_tech_adoption_reports
 
   echo ""
 fi
@@ -1587,6 +1660,7 @@ fi
 if [[ -n "$CSV_FILE" && $repos_in_csv -gt 0 ]]; then
   echo "  Discrepancias de tecnología: $TECH_MISMATCHES_FILE"
   echo "  Distribución adopción: $TECH_ADOPTION_DIST_FILE"
+  echo "  Adopción por tecnología: *-adoption.txt"
 fi
 echo "==============================="
 
@@ -1624,13 +1698,13 @@ if [[ -n "$CSV_FILE" && $repos_in_csv -gt 0 ]]; then
   SLACK_MESSAGE+=$'\n'"• Repos en CSV: $repos_in_csv / $total_repos"
   SLACK_MESSAGE+=$'\n'"• Repos NO en CSV: $not_in_csv_repos"
 
-  # Add adoption distribution
+  # Add global adoption distribution summary
   if (( ${#ADOPTION_COUNTERS[@]} > 0 )); then
-    SLACK_MESSAGE+=$'\n\n*Distribución de Adopción:*'
+    SLACK_MESSAGE+=$'\n\n📋 *Resumen Global de Adopción:*'
     for adoption in "${(@k)ADOPTION_COUNTERS}"; do
       local count=${ADOPTION_COUNTERS[$adoption]}
       local percentage=$(printf "%.1f" $(echo "scale=2; $count * 100 / $repos_in_csv" | bc))
-      SLACK_MESSAGE+=$'\n'"• $adoption: $count ($percentage%)"
+      SLACK_MESSAGE+=$'\n'"• $adoption: $count repos ($percentage%)"
     done
   fi
 
@@ -1656,21 +1730,14 @@ if [[ -n "$CSV_FILE" && $repos_in_csv -gt 0 ]]; then
     SLACK_MESSAGE+=$'\n'"• $tech_display ($tech_count repos):"
 
     # Find adoption states for this tech
-    local found_adoption=false
     for key in "${(@k)TECH_ADOPTION_COUNTERS}"; do
       if [[ "$key" == "$tech:"* ]]; then
         local adoption="${key#*:}"
         local count=${TECH_ADOPTION_COUNTERS[$key]}
         local percentage=$(printf "%.0f" $(echo "scale=2; $count * 100 / $tech_count" | bc))
-        SLACK_MESSAGE+=$' '"$adoption: ${percentage}%,"
-        found_adoption=true
+        SLACK_MESSAGE+=$'\n'"  - $adoption: ${percentage}%"
       fi
     done
-
-    # Remove trailing comma
-    if [[ "$found_adoption" == "true" ]]; then
-      SLACK_MESSAGE="${SLACK_MESSAGE%,}"
-    fi
   done
 fi
 
@@ -1702,6 +1769,14 @@ if [[ -n "$CSV_FILE" && $repos_in_csv -gt 0 ]]; then
   if [[ -f "$TECH_MISMATCHES_FILE" ]]; then
     ATTACH_FILES="$ATTACH_FILES $TECH_MISMATCHES_FILE"
   fi
+
+  # Add per-technology adoption files
+  for tech in maven gradle node go flutter other; do
+    local tech_file="${tech}-adoption.txt"
+    if [[ -f "$tech_file" ]]; then
+      ATTACH_FILES="$ATTACH_FILES $tech_file"
+    fi
+  done
 fi
 
 # Prepare metadata fields for Slack

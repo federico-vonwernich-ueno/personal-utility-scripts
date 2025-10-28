@@ -131,7 +131,28 @@ Each YAML file contains:
 
 ### CSV Analysis Reports (when --csv-file is provided)
 - `technology-mismatches.txt` - Repositories where CSV technology annotation doesn't match detected technology
-- `technology-adoption-distribution.txt` - Detailed breakdown of adoption states by technology
+- `technology-adoption-distribution.txt` - Global adoption summary and per-technology percentages
+- `maven-adoption.txt` - List of Maven repositories grouped by adoption state
+- `gradle-adoption.txt` - List of Gradle repositories grouped by adoption state
+- `node-adoption.txt` - List of Node repositories grouped by adoption state
+- `go-adoption.txt` - List of Go repositories grouped by adoption state
+- `flutter-adoption.txt` - List of Flutter repositories grouped by adoption state
+
+Each per-technology file contains:
+```
+# Maven Adoption Report
+# Total: 104 repos
+# Generated: 2025-10-28 04:18:03
+
+CI Cambios aplicados (67 repos - 64.4%):
+- https://github.com/org/api-service
+- https://github.com/org/payment-gateway
+...
+
+No (18 repos - 17.3%):
+- https://github.com/org/legacy-app
+...
+```
 
 ### Logs
 - `logs/analyze-org-repos-YYYYMMDD-HHMMSS.log` - Timestamped execution logs
@@ -149,8 +170,11 @@ Each YAML file contains:
 4. Generates YAML reports for repositories with and without unified CI
 5. Generates CSV analysis reports (if CSV provided):
    - Technology mismatches between CSV annotation and detected technology
-   - Adoption distribution globally and per technology
-6. Sends Slack notifications with results (if configured)
+   - Global adoption distribution summary
+   - Per-technology adoption reports with repository listings
+6. Sends Slack notifications with results (if configured), including:
+   - Global adoption summary
+   - Technology-specific adoption breakdown
 
 ### CSV Analysis Features
 
@@ -160,11 +184,17 @@ When a CSV file is provided with `--csv-file`, the script performs additional an
 - Tracks all unique adoption states found in CSV
 - Calculates global adoption distribution (percentages)
 - Breaks down adoption by detected technology (Maven, Gradle, Node, Go, Flutter)
+- Generates per-technology reports listing specific repositories for each adoption state
 
 **Technology Validation**:
 - Compares CSV technology annotation against detected technology
 - Reports accuracy metrics (correct vs mismatched annotations)
 - Generates detailed report of all technology mismatches
+
+**Per-Technology Reports**:
+- One file per technology (maven-adoption.txt, gradle-adoption.txt, etc.)
+- Each adoption state shows the actual repository URLs
+- Useful for identifying which specific repositories need attention
 
 **Example Metrics Output**:
 ```
