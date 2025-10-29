@@ -610,7 +610,14 @@ EOF
       done
     fi
 
-    # Note: We don't save TECH_ADOPTION_REPOS as it's large and can be regenerated
+    # Save TECH_ADOPTION_REPOS (repo URL lists per tech:adoption combo)
+    if (( ${#TECH_ADOPTION_REPOS[@]} > 0 )); then
+      echo "typeset -A TECH_ADOPTION_REPOS" >> "$CHECKPOINT_FILE"
+      for key in "${(@k)TECH_ADOPTION_REPOS}"; do
+        local val="${TECH_ADOPTION_REPOS[$key]}"
+        echo "TECH_ADOPTION_REPOS[\"${key//\"/\\\"}\"]=\\"$val\\"" >> "$CHECKPOINT_FILE"
+      done
+    fi
   fi
 
   echo "💾 Progress saved to checkpoint file: $CHECKPOINT_FILE"
@@ -1020,13 +1027,23 @@ EOF
 
     # Find all adoption states for this tech and generate report
     typeset -A adoption_states
+    local total_counted=0
     for key in "${(@k)TECH_ADOPTION_COUNTERS}"; do
       if [[ "$key" == "$tech:"* ]]; then
         local adoption="${key#*:}"
         local count=${TECH_ADOPTION_COUNTERS[$key]}
         adoption_states[$adoption]=$count
+        total_counted=$((total_counted + count))
       fi
     done
+
+    # Validation: Check if total from adoption states matches TECH_IN_CSV_COUNT
+    if (( total_counted != tech_count )); then
+      echo "  ⚠️  ADVERTENCIA: Inconsistencia en $tech_display:" >&2
+      echo "     TECH_IN_CSV_COUNT[$tech] = $tech_count" >&2
+      echo "     Suma de adoption states = $total_counted" >&2
+      echo "     Diferencia: $((tech_count - total_counted)) repos" >&2
+    fi
 
     # For each adoption state, list the repositories
     for adoption in "${(@k)adoption_states}"; do
@@ -1038,6 +1055,19 @@ EOF
       # Get repos for this tech:adoption combination
       local key="${tech}:${adoption}"
       local repos_list="${TECH_ADOPTION_REPOS[$key]:-}"
+
+      # Validation: Count actual URLs and compare to expected count
+      local actual_url_count=0
+      if [[ -n "$repos_list" ]]; then
+        actual_url_count=$(echo "$repos_list" | wc -w)
+      fi
+
+      if (( actual_url_count != count )); then
+        echo "  ⚠️  ADVERTENCIA: Discrepancia en $key:" >&2
+        echo "     Contador: $count repos" >&2
+        echo "     URLs encontradas: $actual_url_count" >&2
+        echo "     URLs faltantes: $((count - actual_url_count))" >&2
+      fi
 
       if [[ -n "$repos_list" ]]; then
         # Split space-separated URLs and format as list
@@ -1434,9 +1464,14 @@ for REPO in $REPOS; do
 
           # Track repo URL for this tech+adoption combination
           TECH_ADOPTION_REPOS[$key]+="$REPO_URL "
+          echo "     ✓ URL agregada para clave: $key (total: ${TECH_ADOPTION_COUNTERS[$key]} repos)"
         fi
       else
         echo "     ⚠️  Ya contado (evitando duplicado)"
+        echo "     → Adopción: $csv_adoption | Tipo: ${PROJECT_TYPE:-NO DETECTADO}"
+        if [[ -n "$PROJECT_TYPE" && -n "$csv_adoption" ]]; then
+          echo "     → Key omitida: ${PROJECT_TYPE}:${csv_adoption}"
+        fi
       fi
 
       # Compare technology annotations
