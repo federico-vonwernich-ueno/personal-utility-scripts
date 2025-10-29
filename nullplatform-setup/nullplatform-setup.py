@@ -861,6 +861,13 @@ class NullplatformSetup:
         print(f"Errors:          {errors}")
         print("="*60)
 
+        # Show created resources with IDs
+        if created > 0:
+            created_output = _format_created_resources(results)
+            if created_output:
+                print("\nCreated Resources:")
+                print(created_output)
+
         if errors > 0:
             print("\nErrors encountered:")
             for result in results:
@@ -1004,6 +1011,52 @@ def _calculate_setup_statistics(results: List[SetupResult]) -> Dict:
     }
 
 
+def _format_created_resources(results: List[SetupResult]) -> str:
+    """
+    Format created resources grouped by type with IDs.
+
+    Args:
+        results: List of SetupResult objects
+
+    Returns:
+        Formatted multi-line string showing created resources
+    """
+    # Group created resources by type
+    by_type = {
+        RESOURCE_APPLICATION: [],
+        RESOURCE_SCOPE: [],
+        RESOURCE_PARAMETER: []
+    }
+
+    for result in results:
+        if result.status == STATUS_CREATED and result.resource_id:
+            if result.resource_type in by_type:
+                by_type[result.resource_type].append(result)
+
+    # Build formatted output
+    lines = []
+
+    # Applications
+    if by_type[RESOURCE_APPLICATION]:
+        lines.append("\nApplications:")
+        for result in by_type[RESOURCE_APPLICATION]:
+            lines.append(f"  ✓ {result.resource_name} (ID: {result.resource_id})")
+
+    # Scopes
+    if by_type[RESOURCE_SCOPE]:
+        lines.append("\nScopes:")
+        for result in by_type[RESOURCE_SCOPE]:
+            lines.append(f"  ✓ {result.resource_name} (ID: {result.resource_id})")
+
+    # Parameters
+    if by_type[RESOURCE_PARAMETER]:
+        lines.append("\nParameters:")
+        for result in by_type[RESOURCE_PARAMETER]:
+            lines.append(f"  ✓ {result.resource_name} (ID: {result.resource_id})")
+
+    return "\n".join(lines) if lines else ""
+
+
 def send_setup_summary_notification(
     config: Config,
     results: List[SetupResult],
@@ -1052,6 +1105,16 @@ def send_setup_summary_notification(
         minutes = int(duration_seconds // 60)
         seconds = int(duration_seconds % 60)
         message_parts.append(f"• Duration: {minutes}m {seconds}s")
+
+    # Add created resources with IDs
+    if created > 0:
+        created_output = _format_created_resources(results)
+        if created_output:
+            message_parts.append("\n*Created Resources:*")
+            # Convert to Slack format (already has proper structure)
+            for line in created_output.split('\n'):
+                if line.strip():
+                    message_parts.append(line)
 
     # Add error details
     if errors > 0:
