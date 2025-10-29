@@ -210,9 +210,14 @@ class NullplatformSetup:
 
         self.logger.info(f"Creating application: {name}")
 
+        # Filter fields to only those expected by the application create API
+        # Exclude nested resources (scopes, parameters) and already-processed fields (namespace)
+        excluded_fields = ['scopes', 'parameters', 'namespace']
+        api_config = {k: v for k, v in app_config.items() if k not in excluded_fields}
+
         returncode, stdout, stderr = self._run_np_command(
             ['application', 'create'],
-            json_body=app_config
+            json_body=api_config
         )
 
         if returncode == 0:
