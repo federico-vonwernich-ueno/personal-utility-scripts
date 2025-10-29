@@ -58,6 +58,47 @@ class NullplatformSetup:
             'scopes': {}         # name -> id
         }
 
+        # Verify np command is available (skip in dry-run mode)
+        if not self.dry_run:
+            self._verify_np_command()
+
+    def _verify_np_command(self):
+        """Verify that the np CLI command is available and working"""
+        try:
+            result = subprocess.run(
+                [self.np_path, '--version'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode != 0:
+                self.logger.warning(
+                    f"Warning: '{self.np_path}' command may not be properly installed.\n"
+                    f"Exit code: {result.returncode}\n"
+                    f"Output: {result.stderr}"
+                )
+        except FileNotFoundError:
+            self.logger.error(
+                f"Error: '{self.np_path}' command not found.\n\n"
+                f"The nullplatform CLI (np) is required but not found in your PATH.\n\n"
+                f"Installation:\n"
+                f"  curl https://cli.nullplatform.com/install.sh | sh\n\n"
+                f"Or if installed elsewhere:\n"
+                f"  python nullplatform-setup.py --np-path /path/to/np\n\n"
+                f"Verify installation:\n"
+                f"  np --version"
+            )
+            sys.exit(1)
+        except subprocess.TimeoutExpired:
+            self.logger.warning(
+                f"Warning: '{self.np_path} --version' timed out after 5 seconds.\n"
+                f"The command may be hung or extremely slow."
+            )
+        except Exception as e:
+            self.logger.warning(
+                f"Warning: Could not verify np command: {e}"
+            )
+
     def _setup_logger(self) -> logging.Logger:
         """Configure logging"""
         logger = logging.getLogger('nullplatform-setup')
@@ -125,10 +166,101 @@ class NullplatformSetup:
                 pass
 
         if result.returncode != 0:
-            self.logger.debug(f"Command failed with code {result.returncode}")
-            self.logger.debug(f"stderr: {result.stderr}")
+            # Log error details at ERROR level for better visibility
+            self.logger.error(f"Command failed with exit code {result.returncode}")
+
+            # Show command with redacted API key
+            safe_cmd = [self.np_path] + command + ['--format', 'json']
+            if self.api_key:
+                safe_cmd.extend(['--api-key', '[REDACTED]'])
+            self.logger.error(f"Command: {' '.join(safe_cmd)}")
+
+            # Show full output (truncate if extremely long)
+            stdout_preview = result.stdout[:500] if len(result.stdout) > 500 else result.stdout
+            stderr_preview = result.stderr[:500] if len(result.stderr) > 500 else result.stderr
+            self.logger.error(f"stdout: {stdout_preview}")
+            self.logger.error(f"stderr: {stderr_preview}")
+
+            # Provide diagnostic hint
+            hint = self._diagnose_error(result.returncode, result.stdout, result.stderr)
+            self.logger.error(f"\nDiagnostic hint:\n{hint}")
 
         return result.returncode, result.stdout, result.stderr
+
+    def _diagnose_error(self, returncode: int, stdout: str, stderr: str) -> str:
+        """
+        Analyze error patterns and provide helpful diagnostic hints.
+
+        Args:
+            returncode: Exit code from command
+            stdout: Standard output
+            stderr: Standard error
+
+        Returns:
+            User-friendly diagnostic hint
+        """
+        combined_output = f"{stdout} {stderr}".lower()
+
+        # Check for authentication errors
+        if any(word in combined_output for word in ['unauthorized', 'authentication', 'invalid api key', 'invalid_api_key']):
+            return (
+                "Authentication failed. Check your API key (NULLPLATFORM_API_KEY).\n"
+                "  1. Verify your API key: echo $NULLPLATFORM_API_KEY\n"
+                "  2. Check if the key has expired in nullplatform UI\n"
+                "  3. Ensure you have permission to perform this operation"
+            )
+
+        # Check for network errors
+        if any(word in combined_output for word in ['connection refused', 'could not resolve', 'timeout', 'network', 'unreachable']):
+            return (
+                "Network error. Check your internet connection and API endpoint.\n"
+                "  1. Verify you can reach the internet\n"
+                "  2. Check if a proxy is required\n"
+                "  3. Verify DNS resolution works"
+            )
+
+        # Check for HTML error page (API down or wrong endpoint)
+        if stdout.strip().startswith('<') or '<html' in stdout.lower() or '<!doctype' in stdout.lower():
+            return (
+                "Received HTML response (possibly error page). API might be down or endpoint incorrect.\n"
+                "  1. Check nullplatform status page\n"
+                "  2. Verify your np CLI is up to date: np --version\n"
+                "  3. Try again in a few minutes"
+            )
+
+        # Check for rate limiting
+        if '429' in combined_output or 'rate limit' in combined_output or 'too many requests' in combined_output:
+            return (
+                "Rate limited. You've made too many requests.\n"
+                "  1. Wait a few minutes before retrying\n"
+                "  2. Consider adding delays between operations"
+            )
+
+        # Check for permission errors
+        if any(word in combined_output for word in ['permission denied', 'forbidden', 'access denied', 'insufficient permissions']):
+            return (
+                "Permission denied. Your API key may lack necessary permissions.\n"
+                "  1. Check your role/permissions in nullplatform UI\n"
+                "  2. Verify the API key has the required scopes\n"
+                "  3. Contact your nullplatform administrator"
+            )
+
+        # Check for not found errors
+        if '404' in combined_output or 'not found' in combined_output:
+            return (
+                "Resource not found.\n"
+                "  1. Verify the resource name/ID is correct\n"
+                "  2. Check if the resource exists: np <resource> list\n"
+                "  3. Ensure you're using the correct namespace"
+            )
+
+        # Generic error
+        return (
+            "Unknown error. Check command output above for details.\n"
+            "  1. Run with --verbose for more information\n"
+            "  2. Check nullplatform documentation\n"
+            "  3. Verify your np CLI is up to date: np --version"
+        )
 
     def _resolve_namespace_id(self, namespace_name: str) -> str:
         """
@@ -154,15 +286,33 @@ class NullplatformSetup:
         returncode, stdout, stderr = self._run_np_command(['namespace', 'list'])
 
         if returncode != 0:
+            # Error details already logged by _run_np_command
             raise ValueError(
-                f"Failed to list namespaces: {stderr}"
+                f"Failed to list namespaces (exit code {returncode}). "
+                f"See error details above."
             )
+
+        # Show raw response if verbose (helps debug JSON parsing issues)
+        if self.verbose and stdout:
+            self.logger.debug(f"Raw namespace list response (first 500 chars): {stdout[:500]}")
 
         try:
             namespaces = json.loads(stdout)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
+            # Show what we tried to parse to help debugging
+            stdout_preview = stdout[:500] if len(stdout) > 500 else stdout
             raise ValueError(
-                f"Failed to parse namespace list response"
+                f"Failed to parse namespace list response as JSON.\n"
+                f"JSON parse error: {str(e)}\n"
+                f"Raw response (first 500 chars): {stdout_preview}\n\n"
+                f"This usually means:\n"
+                f"  - API returned an error page (HTML) instead of JSON\n"
+                f"  - Network issue caused incomplete response\n"
+                f"  - API endpoint is incorrect or unavailable\n\n"
+                f"Troubleshooting:\n"
+                f"  1. Check if np CLI is working: np --version\n"
+                f"  2. Verify API key is set: echo $NULLPLATFORM_API_KEY\n"
+                f"  3. Try listing namespaces directly: np namespace list"
             )
 
         # Find namespace by name
