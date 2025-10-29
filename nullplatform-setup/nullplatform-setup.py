@@ -145,6 +145,12 @@ class NullplatformSetup:
         """
         self.logger.debug(f"Resolving namespace '{namespace_name}' to ID")
 
+        # In dry-run mode, return a mock namespace ID
+        if self.dry_run:
+            mock_id = f"ns-{namespace_name}-dryrun"
+            self.logger.debug(f"[DRY RUN] Using mock namespace ID: {mock_id}")
+            return mock_id
+
         returncode, stdout, stderr = self._run_np_command(['namespace', 'list'])
 
         if returncode != 0:
