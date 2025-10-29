@@ -430,8 +430,35 @@ class NullplatformSetup:
 
         # Filter fields to only those expected by the application create API
         # Exclude nested resources (scopes, parameters) and already-processed fields (namespace)
-        excluded_fields = ['scopes', 'parameters', 'namespace']
+        excluded_fields = ['scopes', 'parameters', 'namespace', 'repository']
         api_config = {k: v for k, v in app_config.items() if k not in excluded_fields}
+
+        # Transform nested repository structure to flat repository_url
+        if 'repository' in app_config:
+            if isinstance(app_config['repository'], dict) and 'url' in app_config['repository']:
+                api_config['repository_url'] = app_config['repository']['url']
+                self.logger.debug(f"Transformed repository.url to repository_url for {name}")
+            elif isinstance(app_config['repository'], str):
+                # Support simplified format: repository: "url"
+                api_config['repository_url'] = app_config['repository']
+                self.logger.debug(f"Using repository as repository_url for {name}")
+
+        # Validate repository_url is present (required by API)
+        if 'repository_url' not in api_config or not api_config.get('repository_url'):
+            self.logger.error(
+                f"Application '{name}' is missing repository_url.\n\n"
+                f"Add to your application config:\n"
+                f"  repository_url: \"https://github.com/your-org/your-repo\"\n\n"
+                f"Or use nested format:\n"
+                f"  repository:\n"
+                f"    url: \"https://github.com/your-org/your-repo\""
+            )
+            return SetupResult(
+                resource_type='application',
+                resource_name=name,
+                status='error',
+                message='Missing required field: repository_url'
+            )
 
         returncode, stdout, stderr = self._run_np_command(
             ['application', 'create'],

@@ -23,6 +23,7 @@ applications:
   # Example 1: Simple application with scopes only
   - name: "my-web-app"
     namespace: "my-namespace"  # Reference existing namespace by name
+    repository_url: "https://github.com/my-org/my-web-app"  # Required: Git repository URL
 
     scopes:
       - name: "development"
@@ -30,10 +31,13 @@ applications:
       - name: "production"
 
   # Example 2: Application with repository and parameters
+  # Note: You can use either flat 'repository_url' or nested 'repository.url' format
   - name: "my-api-service"
     namespace: "my-namespace"
-    repository:
-      url: "https://github.com/my-org/my-api-service"
+    repository_url: "https://github.com/my-org/my-api-service"  # Recommended: flat format
+    # Alternative nested format (also supported):
+    # repository:
+    #   url: "https://github.com/my-org/my-api-service"
 
     scopes:
       - name: "development"
@@ -68,8 +72,7 @@ applications:
   # Example 3: Application with scope-specific parameters and full scope configuration
   - name: "full-stack-app"
     namespace: "my-namespace"
-    repository:
-      url: "https://github.com/my-org/full-stack-app"
+    repository_url: "https://github.com/my-org/full-stack-app"
     # description: "Full stack application"  # Optional fields supported
 
     # Scopes must include required API fields
@@ -137,6 +140,16 @@ applications:
 # 5. Scope references in parameters are resolved automatically within the same app
 #
 # Everything is created in one run - no manual ID copying required!
+#
+# Application Fields:
+# Required fields:
+#   - name: Application name (required)
+#   - namespace: Namespace name reference (required, resolved to namespace_id)
+#   - repository_url: Git repository URL (required)
+#     Supported formats:
+#       1. Flat format (recommended): repository_url: "https://github.com/org/repo"
+#       2. Nested format: repository: { url: "https://github.com/org/repo" }
+#       3. Simplified: repository: "https://github.com/org/repo"
 #
 # Parameter Fields:
 # Required fields (defaults provided if not specified):
