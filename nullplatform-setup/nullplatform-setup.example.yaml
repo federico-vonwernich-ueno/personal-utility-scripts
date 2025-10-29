@@ -20,9 +20,17 @@ applications:
     # type: "web"
     # runtime: "nodejs"
 
+    # Repository connection (optional)
+    # Connect this application to an existing Git repository
+    # repository:
+    #   url: "https://github.com/my-org/my-web-app"
+
   - name: "my-api-service"
     namespace_id: "ns-xxxxx"
     # description: "My API service"
+    # Example with repository:
+    repository:
+      url: "https://github.com/my-org/my-api-service"
 
 # Scopes
 # Scopes define environments or deployment targets (e.g., dev, staging, prod)

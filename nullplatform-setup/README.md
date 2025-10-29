@@ -63,6 +63,12 @@ applications:
   - name: "my-web-app"
     namespace_id: "ns-xxxxx"
 
+  # Application with repository connection
+  - name: "my-api-service"
+    namespace_id: "ns-xxxxx"
+    repository:
+      url: "https://github.com/my-org/my-api-service"
+
 # Scopes (environments)
 scopes:
   - name: "development"
@@ -82,6 +88,25 @@ parameters:
     value: "sk-xxxxx"
     scope_id: "scope-xxxxx"  # Optional: scope-specific value
 ```
+
+### Connecting Repositories
+
+You can optionally connect applications to existing Git repositories:
+
+```yaml
+applications:
+  - name: "my-app"
+    namespace_id: "ns-xxxxx"
+    repository:
+      url: "https://github.com/my-org/my-app"
+```
+
+The `repository` field tells Nullplatform to associate your application with the specified Git repository. This enables:
+- Automatic CI/CD integration
+- Source code tracking
+- Repository-based deployments
+
+**Note**: The repository must already exist in your Git provider (GitHub, GitLab, etc.). The script creates the association in Nullplatform but does not create the repository itself.
 
 ### Resource IDs
 
