@@ -57,8 +57,9 @@ applications:
     scopes:
       - name: "development"
         type: "web_pool"  # Required: scope type (e.g., "web_pool", "worker_pool")
-        environment: "dev"
-        region: "us-east-1"
+        dimensions:  # Required: environment and region metadata
+          environment: "dev"
+          region: "us-east-1"
         visibility: "private"
         requested_spec:  # Required: compute resources specification
           cpu_profile: "standard"
@@ -67,8 +68,9 @@ applications:
 
       - name: "staging"
         type: "web_pool"
-        environment: "staging"
-        region: "us-east-1"
+        dimensions:
+          environment: "staging"
+          region: "us-east-1"
         visibility: "private"
         requested_spec:
           cpu_profile: "standard"
@@ -77,8 +79,9 @@ applications:
 
       - name: "production"
         type: "web_pool"
-        environment: "prod"
-        region: "us-west-2"
+        dimensions:
+          environment: "prod"
+          region: "us-west-2"
         visibility: "public"
         requested_spec:
           cpu_profile: "standard"
