@@ -37,10 +37,7 @@ class SetupResult:
 @dataclass
 class Config:
     """Configuration for nullplatform setup"""
-    namespace: Optional[Dict]
-    applications: List[Dict]
-    parameters: List[Dict]
-    scopes: List[Dict]
+    applications: List[Dict]  # Each application contains nested scopes and parameters
 
 
 class NullplatformSetup:
@@ -56,7 +53,6 @@ class NullplatformSetup:
 
         # Track created resource IDs for dependencies
         self.resource_ids = {
-            'namespace': None,
             'applications': {},  # name -> id
             'parameters': {},    # name -> id
             'scopes': {}         # name -> id
@@ -134,6 +130,55 @@ class NullplatformSetup:
 
         return result.returncode, result.stdout, result.stderr
 
+    def _resolve_namespace_id(self, namespace_name: str) -> str:
+        """
+        Look up namespace ID by name from existing namespaces.
+
+        Args:
+            namespace_name: Name of the namespace
+
+        Returns:
+            Namespace ID
+
+        Raises:
+            ValueError if namespace not found
+        """
+        self.logger.debug(f"Resolving namespace '{namespace_name}' to ID")
+
+        returncode, stdout, stderr = self._run_np_command(['namespace', 'list'])
+
+        if returncode != 0:
+            raise ValueError(
+                f"Failed to list namespaces: {stderr}"
+            )
+
+        try:
+            namespaces = json.loads(stdout)
+        except json.JSONDecodeError:
+            raise ValueError(
+                f"Failed to parse namespace list response"
+            )
+
+        # Find namespace by name
+        for ns in namespaces:
+            if ns.get('name') == namespace_name:
+                namespace_id = ns.get('id')
+                self.logger.debug(f"Resolved namespace '{namespace_name}' to ID: {namespace_id}")
+                return namespace_id
+
+        # Namespace not found - provide helpful error
+        available_names = [ns.get('name') for ns in namespaces if ns.get('name')]
+        if available_names:
+            raise ValueError(
+                f"Namespace '{namespace_name}' not found. "
+                f"Available namespaces: {', '.join(available_names)}"
+            )
+        else:
+            raise ValueError(
+                f"Namespace '{namespace_name}' not found. No namespaces available. "
+                f"Create one first: np namespace create --body '{{\"name\":\"{namespace_name}\"}}'"
+            )
+
     def load_config(self, config_path: str) -> Config:
         """Load and validate configuration from YAML file"""
         self.logger.info(f"Loading configuration from {config_path}")
@@ -146,81 +191,12 @@ class NullplatformSetup:
             sys.exit(1)
 
         config = Config(
-            namespace=data.get('namespace'),
-            applications=data.get('applications', []),
-            parameters=data.get('parameters', []),
-            scopes=data.get('scopes', [])
+            applications=data.get('applications', [])
         )
 
-        self.logger.info(f"Config loaded: {len(config.applications)} apps, "
-                        f"{len(config.parameters)} parameters, "
-                        f"{len(config.scopes)} scopes")
+        self.logger.info(f"Config loaded: {len(config.applications)} applications")
 
         return config
-
-    def create_namespace(self, namespace_config: Dict) -> SetupResult:
-        """Create a namespace"""
-        name = namespace_config.get('name')
-
-        self.logger.info(f"Creating namespace: {name}")
-
-        returncode, stdout, stderr = self._run_np_command(
-            ['namespace', 'create'],
-            json_body=namespace_config
-        )
-
-        if returncode == 0:
-            try:
-                response = json.loads(stdout)
-                namespace_id = response.get('id')
-                self.resource_ids['namespace'] = namespace_id
-
-                self.logger.info(f"✓ Created namespace: {name} (ID: {namespace_id})")
-                return SetupResult(
-                    resource_type='namespace',
-                    resource_name=name,
-                    status='created',
-                    message='Namespace created successfully',
-                    resource_id=namespace_id
-                )
-            except json.JSONDecodeError:
-                self.logger.error(f"Failed to parse response: {stdout}")
-                return SetupResult(
-                    resource_type='namespace',
-                    resource_name=name,
-                    status='error',
-                    message=f'Failed to parse response: {stdout}'
-                )
-        else:
-            # Check if namespace already exists
-            if 'already exists' in stderr.lower():
-                self.logger.warning(f"Namespace {name} already exists")
-                # Try to get existing namespace ID
-                returncode, stdout, stderr = self._run_np_command(['namespace', 'list'])
-                if returncode == 0:
-                    try:
-                        namespaces = json.loads(stdout)
-                        for ns in namespaces:
-                            if ns.get('name') == name:
-                                self.resource_ids['namespace'] = ns.get('id')
-                                break
-                    except Exception:
-                        pass
-
-                return SetupResult(
-                    resource_type='namespace',
-                    resource_name=name,
-                    status='exists',
-                    message='Namespace already exists'
-                )
-
-            self.logger.error(f"Failed to create namespace: {stderr}")
-            return SetupResult(
-                resource_type='namespace',
-                resource_name=name,
-                status='error',
-                message=f'Error: {stderr}'
-            )
 
     def create_application(self, app_config: Dict) -> SetupResult:
         """Create an application"""
@@ -442,7 +418,8 @@ class NullplatformSetup:
 
     def setup_all(self, config: Config) -> List[SetupResult]:
         """
-        Setup all resources from config.
+        Setup all resources from config with nested structure.
+        Each application contains its own scopes and parameters.
         Returns list of SetupResult objects.
         """
         import time
@@ -461,77 +438,104 @@ class NullplatformSetup:
         except Exception as e:
             self.logger.debug(f"[SLACK] Failed to send start notification: {e}")
 
-        # Create namespace first (if specified)
-        if config.namespace:
-            result = self.create_namespace(config.namespace)
-            results.append(result)
-
-            # Send Slack notification for namespace
-            try:
-                slack_rc = send_resource_notification(result, thread_ts=thread_ts)
-                if slack_rc == 0:
-                    self.logger.debug(f"[SLACK] Resource notification sent for namespace")
-                elif slack_rc not in (2, 3, 4):
-                    self.logger.debug(f"[SLACK] Resource notification failed with code {slack_rc}")
-            except Exception as e:
-                self.logger.debug(f"[SLACK] Failed to send resource notification: {e}")
-
-            if result.status == 'error':
-                self.logger.error("Failed to create namespace, stopping setup")
-
-                # Send summary even if stopping early
-                duration = time.time() - start_time
-                try:
-                    send_setup_summary_notification(config, results, duration, thread_ts)
-                except Exception:
-                    pass
-
-                return results
-
-        # Create applications
+        # Process each application with its nested resources
         for app_config in config.applications:
-            result = self.create_application(app_config)
-            results.append(result)
+            app_name = app_config.get('name')
+            self.logger.info(f"Processing application: {app_name}")
 
-            # Send Slack notification
+            # 1. Resolve namespace reference to ID
+            if 'namespace' in app_config:
+                namespace_name = app_config['namespace']
+                try:
+                    namespace_id = self._resolve_namespace_id(namespace_name)
+                    app_config['namespace_id'] = namespace_id
+                    self.logger.debug(f"Resolved namespace '{namespace_name}' to {namespace_id}")
+                except ValueError as e:
+                    self.logger.error(str(e))
+                    result = SetupResult(
+                        resource_type='application',
+                        resource_name=app_name,
+                        status='error',
+                        message=str(e)
+                    )
+                    results.append(result)
+
+                    # Send Slack notification for error
+                    try:
+                        send_resource_notification(result, thread_ts=thread_ts)
+                    except Exception:
+                        pass
+
+                    continue  # Skip this application and its resources
+
+            # 2. Create application
+            app_result = self.create_application(app_config)
+            results.append(app_result)
+
+            # Send Slack notification for application
             try:
-                slack_rc = send_resource_notification(result, thread_ts=thread_ts)
+                slack_rc = send_resource_notification(app_result, thread_ts=thread_ts)
                 if slack_rc == 0:
-                    self.logger.debug(f"[SLACK] Resource notification sent for {result.resource_name}")
+                    self.logger.debug(f"[SLACK] Resource notification sent for {app_result.resource_name}")
                 elif slack_rc not in (2, 3, 4):
                     self.logger.debug(f"[SLACK] Resource notification failed with code {slack_rc}")
             except Exception as e:
                 self.logger.debug(f"[SLACK] Failed to send resource notification: {e}")
 
-        # Create scopes
-        for scope_config in config.scopes:
-            result = self.create_scope(scope_config)
-            results.append(result)
+            if app_result.status == 'error':
+                self.logger.error(f"Failed to create application {app_name}, skipping its scopes and parameters")
+                continue
 
-            # Send Slack notification
-            try:
-                slack_rc = send_resource_notification(result, thread_ts=thread_ts)
-                if slack_rc == 0:
-                    self.logger.debug(f"[SLACK] Resource notification sent for {result.resource_name}")
-                elif slack_rc not in (2, 3, 4):
-                    self.logger.debug(f"[SLACK] Resource notification failed with code {slack_rc}")
-            except Exception as e:
-                self.logger.debug(f"[SLACK] Failed to send resource notification: {e}")
+            app_id = app_result.resource_id
 
-        # Create parameters
-        for param_config in config.parameters:
-            result = self.create_parameter(param_config)
-            results.append(result)
+            # 3. Create scopes for this application
+            scopes = app_config.get('scopes', [])
+            for scope_config in scopes:
+                scope_config['application_id'] = app_id
+                scope_result = self.create_scope(scope_config)
+                results.append(scope_result)
 
-            # Send Slack notification
-            try:
-                slack_rc = send_resource_notification(result, thread_ts=thread_ts)
-                if slack_rc == 0:
-                    self.logger.debug(f"[SLACK] Resource notification sent for {result.resource_name}")
-                elif slack_rc not in (2, 3, 4):
-                    self.logger.debug(f"[SLACK] Resource notification failed with code {slack_rc}")
-            except Exception as e:
-                self.logger.debug(f"[SLACK] Failed to send resource notification: {e}")
+                # Send Slack notification for scope
+                try:
+                    slack_rc = send_resource_notification(scope_result, thread_ts=thread_ts)
+                    if slack_rc == 0:
+                        self.logger.debug(f"[SLACK] Resource notification sent for {scope_result.resource_name}")
+                    elif slack_rc not in (2, 3, 4):
+                        self.logger.debug(f"[SLACK] Resource notification failed with code {slack_rc}")
+                except Exception as e:
+                    self.logger.debug(f"[SLACK] Failed to send resource notification: {e}")
+
+            # 4. Create parameters for this application
+            parameters = app_config.get('parameters', [])
+            for param_config in parameters:
+                param_config['application_id'] = app_id
+
+                # Resolve scope reference if present
+                if 'scope' in param_config:
+                    scope_name = param_config['scope']
+                    scope_id = self.resource_ids['scopes'].get(scope_name)
+
+                    if scope_id:
+                        param_config['scope_id'] = scope_id
+                        self.logger.debug(f"Resolved scope '{scope_name}' to {scope_id}")
+                    else:
+                        self.logger.warning(
+                            f"Scope '{scope_name}' not found for parameter '{param_config.get('name')}' "
+                            f"in application '{app_name}'"
+                        )
+
+                param_result = self.create_parameter(param_config)
+                results.append(param_result)
+
+                # Send Slack notification for parameter
+                try:
+                    slack_rc = send_resource_notification(param_result, thread_ts=thread_ts)
+                    if slack_rc == 0:
+                        self.logger.debug(f"[SLACK] Resource notification sent for {param_result.resource_name}")
+                    elif slack_rc not in (2, 3, 4):
+                        self.logger.debug(f"[SLACK] Resource notification failed with code {slack_rc}")
+                except Exception as e:
+                    self.logger.debug(f"[SLACK] Failed to send resource notification: {e}")
 
         # Calculate duration
         duration = time.time() - start_time

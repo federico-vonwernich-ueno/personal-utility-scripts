@@ -51,76 +51,101 @@ chmod +x nullplatform-setup.py
 
 ## Configuration
 
-Create `nullplatform-setup.yaml`:
+### Prerequisites
+
+Before using the script, you must have an existing namespace. Create one if needed:
+
+```bash
+# Create a namespace
+np namespace create --body '{"name":"my-namespace"}'
+
+# List existing namespaces
+np namespace list --format json
+```
+
+### Configuration File
+
+Create `nullplatform-setup.yaml` with nested structure:
 
 ```yaml
-# Optional: Create or use existing namespace
-namespace:
-  name: "my-namespace"
-
-# Applications to create
 applications:
   - name: "my-web-app"
-    namespace_id: "ns-xxxxx"
+    namespace: "my-namespace"  # Reference existing namespace by name
 
-  # Application with repository connection
+    scopes:
+      - name: "development"
+      - name: "staging"
+      - name: "production"
+
+    parameters:
+      - name: "DATABASE_URL"
+        value: "postgres://localhost:5432/mydb"
+
+      - name: "LOG_LEVEL"
+        scope: "development"  # Scope-specific value
+        value: "debug"
+
+      - name: "LOG_LEVEL"
+        scope: "production"
+        value: "error"
+
   - name: "my-api-service"
-    namespace_id: "ns-xxxxx"
+    namespace: "my-namespace"
     repository:
       url: "https://github.com/my-org/my-api-service"
 
-# Scopes (environments)
-scopes:
-  - name: "development"
-    application_id: "app-xxxxx"
+    scopes:
+      - name: "development"
+      - name: "production"
 
-  - name: "production"
-    application_id: "app-xxxxx"
-
-# Parameters (environment variables, config values)
-parameters:
-  - name: "DATABASE_URL"
-    application_id: "app-xxxxx"
-    value: "postgres://localhost:5432/mydb"
-
-  - name: "API_KEY"
-    application_id: "app-xxxxx"
-    value: "sk-xxxxx"
-    scope_id: "scope-xxxxx"  # Optional: scope-specific value
+    parameters:
+      - name: "API_KEY"
+        value: "sk-xxxxx"
 ```
 
-### Connecting Repositories
+### Key Features
 
-You can optionally connect applications to existing Git repositories:
+**Nested Structure**: Each application contains its own scopes and parameters - no manual ID management needed.
 
+**Automatic ID Resolution**:
+- Namespace names are resolved to IDs automatically
+- Application IDs are captured and used for nested resources
+- Scope references in parameters are resolved by name
+
+**Repository Connection**: Optionally connect applications to Git repositories:
 ```yaml
 applications:
   - name: "my-app"
-    namespace_id: "ns-xxxxx"
+    namespace: "my-namespace"
     repository:
       url: "https://github.com/my-org/my-app"
 ```
 
-The `repository` field tells Nullplatform to associate your application with the specified Git repository. This enables:
+The `repository` field associates your application with a Git repository, enabling:
 - Automatic CI/CD integration
 - Source code tracking
 - Repository-based deployments
 
-**Note**: The repository must already exist in your Git provider (GitHub, GitLab, etc.). The script creates the association in Nullplatform but does not create the repository itself.
+**Note**: The repository must already exist in your Git provider.
 
-### Resource IDs
+### Scope-Specific Parameters
 
-You'll need IDs for parent resources. Run the script incrementally:
+Parameters can be application-level or scope-specific:
 
-1. Create namespace first → Note the namespace ID
-2. Update config with namespace ID → Create applications
-3. Note application IDs → Create scopes and parameters
+```yaml
+parameters:
+  # Application-level (applies to all scopes)
+  - name: "FEATURE_FLAGS"
+    value: "new-ui,analytics"
 
-Get existing IDs:
-```bash
-np namespace list --format json
-np application list --format json
-np scope list --format json
+  # Scope-specific (different values per environment)
+  - name: "API_URL"
+    scope: "development"
+    value: "https://api-dev.example.com"
+
+  - name: "API_URL"
+    scope: "production"
+    value: "https://api.example.com"
 ```
 
 ## Usage
@@ -178,44 +203,60 @@ See [Slack Integration Guide](../docs/SLACK_INTEGRATION.md) for detailed setup.
 
 ## How It Works
 
-### Creation Order
+### Nested Structure Workflow
 
-Resources are created in dependency order:
+For each application in your config:
 
-1. **Namespace** (if specified)
-2. **Applications** (require namespace ID)
-3. **Scopes** (require application ID)
-4. **Parameters** (require application ID, optionally scope ID)
+1. **Resolve Namespace**: Looks up namespace ID by name from existing namespaces
+2. **Create Application**: Creates the application in the resolved namespace
+3. **Create Scopes**: Creates all scopes for this application using the application ID
+4. **Create Parameters**: Creates all parameters, resolving scope references by name
 
-### ID Tracking
+Everything happens in one run - no manual ID copying between steps!
 
-The script automatically:
-- Captures resource IDs from creation responses
-- Stores them for use in dependent resources
-- Can reference IDs from earlier in the same run
+### Automatic ID Resolution
+
+**Namespaces**: Referenced by name, resolved to ID via API lookup
+```yaml
+namespace: "my-namespace"  # Script looks up: ns-abc123
+```
+
+**Scopes**: Referenced by name within parameters
+```yaml
+parameters:
+  - name: "API_URL"
+    scope: "development"  # Script uses scope ID from earlier creation
+```
+
+**Applications**: IDs captured automatically and used for nested resources
 
 ### Error Handling
 
-- **Resource already exists**: Logs warning, continues
-- **Creation error**: Logs details, continues with next resource
-- **Missing dependencies**: Fails with clear error message
-- **API errors**: Shows full error from nullplatform
+- **Namespace not found**: Shows available namespaces, provides creation command
+- **Application creation fails**: Skips its scopes and parameters, continues with next app
+- **Scope not found**: Warns but continues (parameter becomes application-level)
+- **Resource already exists**: Logs warning, attempts to retrieve ID, continues
 
 ## Example Output
 
 ```
-2025-10-23 16:30:00 - INFO - Loading configuration from nullplatform-setup.yaml
-2025-10-23 16:30:00 - INFO - Config loaded: 2 apps, 3 parameters, 2 scopes
-2025-10-23 16:30:01 - INFO - Creating namespace: my-namespace
-2025-10-23 16:30:02 - INFO - ✓ Created namespace: my-namespace (ID: ns-abc123)
-2025-10-23 16:30:02 - INFO - Creating application: my-web-app
-2025-10-23 16:30:03 - INFO - ✓ Created application: my-web-app (ID: app-def456)
+2025-10-29 16:30:00 - INFO - Loading configuration from nullplatform-setup.yaml
+2025-10-29 16:30:00 - INFO - Config loaded: 2 applications
+2025-10-29 16:30:01 - INFO - Processing application: my-web-app
+2025-10-29 16:30:01 - INFO - Creating application: my-web-app
+2025-10-29 16:30:02 - INFO - ✓ Created application: my-web-app (ID: app-abc123)
+2025-10-29 16:30:02 - INFO - Creating scope: development
+2025-10-29 16:30:03 - INFO - ✓ Created scope: development (ID: scope-def456)
+2025-10-29 16:30:03 - INFO - Creating parameter: DATABASE_URL
+2025-10-29 16:30:04 - INFO - ✓ Created parameter: DATABASE_URL (ID: param-ghi789)
+2025-10-29 16:30:04 - INFO - Processing application: my-api-service
+...
 
 ============================================================
 SETUP SUMMARY
 ============================================================
-Total resources: 7
-Created:         7
+Total resources: 8
+Created:         8
 Already exists:  0
 Errors:          0
 ============================================================
@@ -237,10 +278,17 @@ python nullplatform-setup.py --np-path /path/to/np
 ### "API key required"
 Set the `NULLPLATFORM_API_KEY` environment variable or pass via `--api-key`.
 
-### "Missing required field: namespace_id"
-Applications require a namespace_id. Either:
-1. Create a namespace first and use its ID
-2. Get an existing namespace ID: `np namespace list --format json`
+### "Namespace 'my-namespace' not found"
+The namespace must exist before running the script. Either:
+1. Create it: `np namespace create --body '{"name":"my-namespace"}'`
+2. Check existing: `np namespace list --format json`
+3. Use a different namespace name in your config
+
+### "Scope 'development' not found for parameter"
+This warning means the parameter references a scope that wasn't created. Check:
+1. Scope name is spelled correctly in both places
+2. Scope was successfully created (check logs for errors)
+3. Scope and parameter are under the same application
 
 ### JSON parsing errors
 Run with `--verbose` to see full command output and identify issues.
@@ -257,11 +305,23 @@ python nullplatform-setup.py --np-path ~/.local/bin/np
 
 ### Incremental Setup
 
-Run the script multiple times. It will skip resources that already exist:
+The script is idempotent - you can run it multiple times safely:
 
-1. First run: Create namespace and applications
-2. Update config with created IDs
-3. Second run: Create scopes and parameters
+1. Existing resources are detected and skipped
+2. New resources in config are created
+3. Useful for gradually building out your infrastructure
+
+Example workflow:
+```bash
+# First run: Create applications with basic scopes
+python nullplatform-setup.py
+
+# Later: Add more parameters to config
+# Edit nullplatform-setup.yaml to add parameters
+
+# Second run: Creates new parameters, skips existing resources
+python nullplatform-setup.py
+```
 
 ## Slack Notifications
 
@@ -286,12 +346,14 @@ These templates are automatically used when Slack notifications are enabled.
 
 ## Best Practices
 
-1. Use dry-run first: `--dry-run` before creating resources
-2. Version control your config (without secrets)
-3. Use secrets management for API keys and parameter values
-4. Create resources in stages to manage dependencies
-5. Document resource IDs for future reference
-6. Test in non-production environment first
+1. **Always use dry-run first**: `--dry-run` to preview before creating resources
+2. **Version control your config**: Commit YAML files (without secrets) to git
+3. **Use environment variables for secrets**: Never hardcode API keys or sensitive values
+4. **Create namespace first**: Ensure namespace exists before running script
+5. **Group related resources**: Keep applications and their resources together in config
+6. **Use meaningful names**: Clear application and scope names help with debugging
+7. **Test in non-production**: Create a test namespace to validate config first
+8. **Start simple**: Begin with basic config, then add complexity gradually
 
 ## Security Notes
 

@@ -1,79 +1,88 @@
 # Nullplatform Setup Configuration
 #
-# This configuration file defines the resources to create in nullplatform.
-# Resources are created in order: namespace -> applications -> scopes -> parameters
-
-# Namespace (optional)
-# If not specified, resources will be created in the default or existing namespace
-namespace:
-  name: "my-namespace"
-  # Add other namespace fields as required by nullplatform API
+# This configuration file defines applications and their nested resources.
+# Each application contains its own scopes and parameters.
+#
+# Prerequisites:
+# - Namespace must already exist (create with: np namespace create --body '{"name":"my-namespace"}')
+# - Get namespace name with: np namespace list --format json
 
 # Applications
-# List of applications to create
+# Each application can contain nested scopes and parameters
 applications:
+  # Example 1: Simple application with scopes only
   - name: "my-web-app"
-    namespace_id: "ns-xxxxx"  # Required if creating in specific namespace
-    # Add other application fields as required by nullplatform API
-    # Examples might include:
-    # description: "My web application"
-    # type: "web"
-    # runtime: "nodejs"
+    namespace: "my-namespace"  # Reference existing namespace by name
 
-    # Repository connection (optional)
-    # Connect this application to an existing Git repository
-    # repository:
-    #   url: "https://github.com/my-org/my-web-app"
+    scopes:
+      - name: "development"
+      - name: "staging"
+      - name: "production"
 
+  # Example 2: Application with repository and parameters
   - name: "my-api-service"
-    namespace_id: "ns-xxxxx"
-    # description: "My API service"
-    # Example with repository:
+    namespace: "my-namespace"
     repository:
       url: "https://github.com/my-org/my-api-service"
 
-# Scopes
-# Scopes define environments or deployment targets (e.g., dev, staging, prod)
-scopes:
-  - name: "development"
-    application_id: "app-xxxxx"  # Required: ID of the parent application
-    # Add other scope fields as required by nullplatform API
-    # Examples might include:
-    # type: "development"
-    # dimensions:
-    #   environment: "dev"
-    #   region: "us-east-1"
+    scopes:
+      - name: "development"
+      - name: "production"
 
-  - name: "production"
-    application_id: "app-xxxxx"
-    # type: "production"
+    parameters:
+      - name: "DATABASE_URL"
+        value: "postgres://localhost:5432/mydb"
 
-# Parameters
-# Application or scope-level configuration parameters
-parameters:
-  - name: "DATABASE_URL"
-    application_id: "app-xxxxx"  # Required: ID of the parent application
-    # Optional: Set a value for this parameter
-    value: "postgres://localhost:5432/mydb"
-    # Optional: If you want to set this value at scope level
-    # scope_id: "scope-xxxxx"
-    # Add other parameter fields as required by nullplatform API
-    # Examples might include:
-    # description: "Database connection string"
-    # secret: true  # Mark as secret if sensitive
-    # required: true
+      - name: "API_KEY"
+        value: "sk-xxxxx"
+        # secret: true  # Mark as secret if sensitive
 
-  - name: "API_KEY"
-    application_id: "app-xxxxx"
-    value: "sk-xxxxx"
-    # secret: true
+      - name: "LOG_LEVEL"
+        value: "info"
 
-  - name: "LOG_LEVEL"
-    application_id: "app-xxxxx"
-    value: "info"
+  # Example 3: Application with scope-specific parameters
+  - name: "full-stack-app"
+    namespace: "my-namespace"
+    repository:
+      url: "https://github.com/my-org/full-stack-app"
+    # description: "Full stack application"  # Optional fields supported
 
-# Notes:
-# 1. Replace placeholder IDs (ns-xxxxx, app-xxxxx, scope-xxxxx) with actual IDs
-# 2. The script will create resources and track their IDs automatically
-# 3. Use --dry-run flag to preview actions before creating resources
-# 4. Check nullplatform API documentation for all available fields
+    scopes:
+      - name: "development"
+      - name: "staging"
+      - name: "production"
+
+    parameters:
+      # Scope-specific parameters (different values per environment)
+      - name: "API_BASE_URL"
+        scope: "development"  # Reference scope by name
+        value: "https://api-dev.example.com"
+
+      - name: "API_BASE_URL"
+        scope: "staging"
+        value: "https://api-staging.example.com"
+
+      - name: "API_BASE_URL"
+        scope: "production"
+        value: "https://api.example.com"
+
+      # Application-level parameters (no scope = applies to all environments)
+      - name: "FEATURE_FLAGS"
+        value: "new-ui,analytics,dark-mode"
+
+      - name: "MAX_UPLOAD_SIZE"
+        value: "10485760"  # 10MB in bytes
+
+# How It Works:
+# 1. Script resolves namespace name to ID automatically
+# 2. Creates each application in the specified namespace
+# 3. Creates all scopes for that application (using application ID)
+# 4. Creates all parameters for that application (using application ID)
+# 5. Scope references in parameters are resolved automatically within the same app
+#
+# Everything is created in one run - no manual ID copying required!
+#
+# Usage:
+#   python nullplatform-setup.py --config nullplatform-setup.yaml
+#   python nullplatform-setup.py --config nullplatform-setup.yaml --dry-run  # Preview first
+#   python nullplatform-setup.py --config nullplatform-setup.yaml --verbose  # Debug info
