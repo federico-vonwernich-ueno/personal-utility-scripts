@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
 from pathlib import Path
@@ -64,6 +65,7 @@ class SetupResult:
     status: str  # 'created', 'exists', 'error'
     message: str
     resource_id: Optional[str] = None
+    nrn: Optional[str] = None  # Nullplatform Resource Name
 
 
 @dataclass
@@ -85,6 +87,7 @@ class NullplatformSetup:
         self.dry_run = dry_run
         self.verbose = verbose
         self.np_path = np_path
+        self.log_file_path = None  # Will be set by _setup_logger()
         self.logger = self._setup_logger()
 
         # Track created resource IDs for dependencies
@@ -136,19 +139,33 @@ class NullplatformSetup:
             )
 
     def _setup_logger(self) -> logging.Logger:
-        """Configure logging"""
+        """Configure logging to console and file"""
         logger = logging.getLogger('nullplatform-setup')
         level = logging.DEBUG if self.verbose else logging.INFO
         logger.setLevel(level)
 
-        handler = logging.StreamHandler()
-        handler.setLevel(level)
         formatter = logging.Formatter(
             '%(asctime)s - %(levelname)s - %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
         )
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
+
+        # Console handler
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(level)
+        console_handler.setFormatter(formatter)
+        logger.addHandler(console_handler)
+
+        # File handler with timestamped filename
+        timestamp = datetime.now().strftime('%Y-%m-%d-%H%M%S')
+        log_filename = f'nullplatform-setup-{timestamp}.log'
+        self.log_file_path = log_filename
+
+        file_handler = logging.FileHandler(log_filename, encoding='utf-8')
+        file_handler.setLevel(logging.DEBUG)  # Always log DEBUG to file
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+
+        logger.info(f"Logging to file: {log_filename}")
 
         return logger
 
@@ -413,7 +430,7 @@ class NullplatformSetup:
 
     def _handle_api_response(self, resource_type: str, resource_name: str,
                             returncode: int, stdout: str, stderr: str,
-                            resource_dict_key: str = None) -> SetupResult:
+                            resource_dict_key: str = None, nrn: Optional[str] = None) -> SetupResult:
         """
         Handle API response and return SetupResult.
         Consolidates common response handling logic across all create_* methods.
@@ -425,6 +442,7 @@ class NullplatformSetup:
             stdout: Command stdout
             stderr: Command stderr
             resource_dict_key: Optional key for self.resource_ids dict (defaults to resource_type + 's')
+            nrn: Optional Nullplatform Resource Name
 
         Returns:
             SetupResult object
@@ -440,13 +458,19 @@ class NullplatformSetup:
                 if resource_dict_key in self.resource_ids:
                     self.resource_ids[resource_dict_key][resource_name] = resource_id
 
-                self.logger.info(f"✓ Created {resource_type}: {resource_name} (ID: {resource_id})")
+                # Log with NRN if available
+                if nrn:
+                    self.logger.info(f"✓ Created {resource_type}: {resource_name} (ID: {resource_id}, NRN: {nrn})")
+                else:
+                    self.logger.info(f"✓ Created {resource_type}: {resource_name} (ID: {resource_id})")
+
                 return SetupResult(
                     resource_type=resource_type,
                     resource_name=resource_name,
                     status=STATUS_CREATED,
                     message=f'{resource_type.capitalize()} created successfully',
-                    resource_id=resource_id
+                    resource_id=resource_id,
+                    nrn=nrn
                 )
             except json.JSONDecodeError:
                 self.logger.error(f"Failed to parse response: {stdout}")
@@ -659,8 +683,19 @@ class NullplatformSetup:
         if returncode != 0 and 'already exists' in stderr.lower():
             return self._handle_already_exists(RESOURCE_APPLICATION, name)
 
+        # Build NRN if creation was successful
+        nrn = None
+        if returncode == 0 and 'namespace_id' in app_config:
+            try:
+                response = json.loads(stdout)
+                app_id = response.get('id')
+                if app_id:
+                    nrn = self._build_application_nrn(str(app_config['namespace_id']), str(app_id))
+            except json.JSONDecodeError:
+                pass  # Will be handled by _handle_api_response
+
         # Handle API response (success or other errors)
-        return self._handle_api_response(RESOURCE_APPLICATION, name, returncode, stdout, stderr)
+        return self._handle_api_response(RESOURCE_APPLICATION, name, returncode, stdout, stderr, nrn=nrn)
 
     def create_parameter(self, param_config: Dict) -> SetupResult:
         """Create a parameter and optionally set its value"""
@@ -673,11 +708,13 @@ class NullplatformSetup:
         param_def = {k: v for k, v in param_config.items() if k not in ['value', 'scope', 'application_id', 'namespace_id']}
 
         # Build NRN from application_id and namespace_id
+        param_nrn = None
         if 'application_id' in param_config and 'namespace_id' in param_config:
-            param_def['nrn'] = self._build_application_nrn(
+            param_nrn = self._build_application_nrn(
                 str(param_config['namespace_id']),
                 str(param_config['application_id'])
             )
+            param_def['nrn'] = param_nrn
         else:
             self.logger.error(f"Missing application_id or namespace_id for parameter {name}")
             return SetupResult(
@@ -729,7 +766,7 @@ class NullplatformSetup:
             return self._handle_already_exists(RESOURCE_PARAMETER, name)
 
         # Handle creation success/failure
-        result = self._handle_api_response(RESOURCE_PARAMETER, name, returncode, stdout, stderr)
+        result = self._handle_api_response(RESOURCE_PARAMETER, name, returncode, stdout, stderr, nrn=param_nrn)
 
         # If parameter created successfully and value provided, set the value
         if result.status == STATUS_CREATED and 'value' in param_config:
@@ -753,8 +790,23 @@ class NullplatformSetup:
         if returncode != 0 and 'already exists' in stderr.lower():
             return self._handle_already_exists(RESOURCE_SCOPE, name)
 
+        # Build NRN if creation was successful
+        nrn = None
+        if returncode == 0 and 'namespace_id' in scope_config and 'application_id' in scope_config:
+            try:
+                response = json.loads(stdout)
+                scope_id = response.get('id')
+                if scope_id:
+                    nrn = self._build_scope_nrn(
+                        str(scope_config['namespace_id']),
+                        str(scope_config['application_id']),
+                        str(scope_id)
+                    )
+            except json.JSONDecodeError:
+                pass  # Will be handled by _handle_api_response
+
         # Handle API response (success or other errors)
-        return self._handle_api_response(RESOURCE_SCOPE, name, returncode, stdout, stderr)
+        return self._handle_api_response(RESOURCE_SCOPE, name, returncode, stdout, stderr, nrn=nrn)
 
     def setup_all(self, config: Config) -> List[SetupResult]:
         """
@@ -806,6 +858,7 @@ class NullplatformSetup:
             scopes = app_config.get('scopes', [])
             for scope_config in scopes:
                 scope_config['application_id'] = app_id
+                scope_config['namespace_id'] = app_config.get('namespace_id')
                 scope_result = self.create_scope(scope_config)
                 results.append(scope_result)
 
@@ -834,7 +887,7 @@ class NullplatformSetup:
         duration = time.time() - start_time
 
         try:
-            slack_rc = send_setup_summary_notification(config, results, duration, thread_ts=None)
+            slack_rc = send_setup_summary_notification(config, results, duration, thread_ts=None, setup=self)
             if slack_rc == EXIT_SUCCESS:
                 self.logger.debug("[SLACK] Summary notification sent successfully")
             elif slack_rc not in (SLACK_MISSING_DEPENDENCY, SLACK_NO_TOKEN, SLACK_NO_CHANNEL):
@@ -932,7 +985,8 @@ def send_slack_notification(
     status: str = "info",
     template: Optional[str] = None,
     template_vars: Optional[Dict[str, str]] = None,
-    thread_ts: Optional[str] = None
+    thread_ts: Optional[str] = None,
+    files: Optional[List[str]] = None
 ) -> Tuple[int, Optional[str]]:
     """
     Send notification via Slack using companion notifier script.
@@ -946,6 +1000,7 @@ def send_slack_notification(
         template: Template name (optional)
         template_vars: Template variables (optional)
         thread_ts: Thread timestamp for threaded replies (optional)
+        files: List of file paths to upload (optional)
 
     Returns:
         Tuple of (exit_code, thread_ts) where thread_ts is returned for new threads
@@ -985,6 +1040,10 @@ def send_slack_notification(
             if k is not None and v is not None:
                 cmd.extend(["--var", f"{k}={v}"])
 
+    if files:
+        cmd.append("--files")
+        cmd.extend(files)
+
     # Execute
     try:
         result = subprocess.run(cmd, capture_output=True, text=True)
@@ -1013,13 +1072,13 @@ def _calculate_setup_statistics(results: List[SetupResult]) -> Dict:
 
 def _format_created_resources(results: List[SetupResult]) -> str:
     """
-    Format created resources grouped by type with IDs.
+    Format created resources grouped by type with IDs and NRNs.
 
     Args:
         results: List of SetupResult objects
 
     Returns:
-        Formatted multi-line string showing created resources
+        Formatted multi-line string showing created resources with IDs and NRNs
     """
     # Group created resources by type
     by_type = {
@@ -1040,19 +1099,28 @@ def _format_created_resources(results: List[SetupResult]) -> str:
     if by_type[RESOURCE_APPLICATION]:
         lines.append("\nApplications:")
         for result in by_type[RESOURCE_APPLICATION]:
-            lines.append(f"  ✓ {result.resource_name} (ID: {result.resource_id})")
+            lines.append(f"  ✓ {result.resource_name}")
+            lines.append(f"    ID: {result.resource_id}")
+            if result.nrn:
+                lines.append(f"    NRN: {result.nrn}")
 
     # Scopes
     if by_type[RESOURCE_SCOPE]:
         lines.append("\nScopes:")
         for result in by_type[RESOURCE_SCOPE]:
-            lines.append(f"  ✓ {result.resource_name} (ID: {result.resource_id})")
+            lines.append(f"  ✓ {result.resource_name}")
+            lines.append(f"    ID: {result.resource_id}")
+            if result.nrn:
+                lines.append(f"    NRN: {result.nrn}")
 
     # Parameters
     if by_type[RESOURCE_PARAMETER]:
         lines.append("\nParameters:")
         for result in by_type[RESOURCE_PARAMETER]:
-            lines.append(f"  ✓ {result.resource_name} (ID: {result.resource_id})")
+            lines.append(f"  ✓ {result.resource_name}")
+            lines.append(f"    ID: {result.resource_id}")
+            if result.nrn:
+                lines.append(f"    NRN: {result.nrn}")
 
     return "\n".join(lines) if lines else ""
 
@@ -1061,16 +1129,18 @@ def send_setup_summary_notification(
     config: Config,
     results: List[SetupResult],
     duration_seconds: Optional[float] = None,
-    thread_ts: Optional[str] = None
+    thread_ts: Optional[str] = None,
+    setup: Optional['NullplatformSetup'] = None
 ) -> int:
     """
-    Send Slack notification with setup summary.
+    Send Slack notification with setup summary and log file.
 
     Args:
         config: Configuration object
         results: List of SetupResult objects
         duration_seconds: Duration of setup in seconds (optional)
         thread_ts: Thread timestamp for threading (optional)
+        setup: NullplatformSetup instance for accessing log file path (optional)
 
     Returns:
         Exit code
@@ -1150,6 +1220,11 @@ def send_setup_summary_notification(
     error_list_str = "\n".join([f"{r.resource_type}/{r.resource_name}: {r.message}"
                                 for r in results if r.status == STATUS_ERROR][:10])
 
+    # Prepare log file for upload if available
+    log_files = []
+    if setup and setup.log_file_path:
+        log_files = [setup.log_file_path]
+
     exit_code, _ = send_slack_notification(
         title,
         message,
@@ -1164,7 +1239,8 @@ def send_setup_summary_notification(
             "ERROR_LIST": error_list_str if error_list_str else "None",
             "CREATED_RESOURCES": created_resources_str if created_resources_str else "None"
         },
-        thread_ts=thread_ts
+        thread_ts=thread_ts,
+        files=log_files if log_files else None
     )
 
     return exit_code
