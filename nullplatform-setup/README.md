@@ -53,8 +53,15 @@ chmod +x nullplatform-setup.py
 
 ### Prerequisites
 
-Before using the script, you must have an existing namespace. Create one if needed:
+Before using the script, you need:
 
+**1. Account ID (required)**
+```bash
+# Get your account ID
+np account list --format json
+```
+
+**2. Existing Namespace**
 ```bash
 # Create a namespace
 np namespace create --body '{"name":"my-namespace"}'
@@ -68,6 +75,9 @@ np namespace list --format json
 Create `nullplatform-setup.yaml` with nested structure:
 
 ```yaml
+# Account ID (required)
+account_id: "your-account-id-here"
+
 applications:
   - name: "my-web-app"
     namespace: "my-namespace"  # Reference existing namespace by name

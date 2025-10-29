@@ -4,8 +4,13 @@
 # Each application contains its own scopes and parameters.
 #
 # Prerequisites:
+# - Nullplatform Account ID (required - get with: np account list --format json)
 # - Namespace must already exist (create with: np namespace create --body '{"name":"my-namespace"}')
 # - Get namespace name with: np namespace list --format json
+
+# Account ID (required)
+# Your Nullplatform account ID - get it with: np account list --format json
+account_id: "your-account-id-here"
 
 # Applications
 # Each application can contain nested scopes and parameters

@@ -37,6 +37,7 @@ class SetupResult:
 @dataclass
 class Config:
     """Configuration for nullplatform setup"""
+    account_id: Optional[str]  # Nullplatform account ID (required)
     applications: List[Dict]  # Each application contains nested scopes and parameters
 
 
@@ -46,6 +47,7 @@ class NullplatformSetup:
     def __init__(self, api_key: Optional[str] = None, dry_run: bool = False,
                  verbose: bool = False, np_path: str = "np"):
         self.api_key = api_key or os.environ.get('NULLPLATFORM_API_KEY')
+        self.account_id = None  # Set later from config in setup_all()
         self.dry_run = dry_run
         self.verbose = verbose
         self.np_path = np_path
@@ -116,15 +118,21 @@ class NullplatformSetup:
 
         return logger
 
-    def _run_np_command(self, command: List[str], json_body: Optional[Dict] = None) -> Tuple[int, str, str]:
+    def _run_np_command(self, command: List[str], json_body: Optional[Dict] = None,
+                        account_id: Optional[str] = None) -> Tuple[int, str, str]:
         """
         Run an np CLI command and return (returncode, stdout, stderr)
 
         Args:
             command: Command parts (e.g., ['application', 'create'])
             json_body: Optional JSON body to pass via --body
+            account_id: Optional account ID to pass via --account-id
         """
         cmd = [self.np_path] + command
+
+        # Add account ID if provided
+        if account_id:
+            cmd.extend(['--account-id', account_id])
 
         # Add API key if provided
         if self.api_key:
@@ -283,7 +291,7 @@ class NullplatformSetup:
             self.logger.debug(f"[DRY RUN] Using mock namespace ID: {mock_id}")
             return mock_id
 
-        returncode, stdout, stderr = self._run_np_command(['namespace', 'list'])
+        returncode, stdout, stderr = self._run_np_command(['namespace', 'list'], account_id=self.account_id)
 
         if returncode != 0:
             # Error details already logged by _run_np_command
@@ -347,10 +355,22 @@ class NullplatformSetup:
             sys.exit(1)
 
         config = Config(
+            account_id=data.get('account_id'),
             applications=data.get('applications', [])
         )
 
-        self.logger.info(f"Config loaded: {len(config.applications)} applications")
+        # Validate account_id is provided
+        if not config.account_id:
+            self.logger.error(
+                "Error: 'account_id' is required in configuration file.\n\n"
+                "Add to your config file:\n"
+                "  account_id: \"your-account-id\"\n\n"
+                "Get your account ID with:\n"
+                "  np account list --format json"
+            )
+            sys.exit(1)
+
+        self.logger.info(f"Config loaded: account_id={config.account_id}, {len(config.applications)} applications")
 
         return config
 
@@ -367,7 +387,8 @@ class NullplatformSetup:
 
         returncode, stdout, stderr = self._run_np_command(
             ['application', 'create'],
-            json_body=api_config
+            json_body=api_config,
+            account_id=self.account_id
         )
 
         if returncode == 0:
@@ -397,7 +418,7 @@ class NullplatformSetup:
             if 'already exists' in stderr.lower():
                 self.logger.warning(f"Application {name} already exists")
                 # Try to get existing application ID
-                returncode, stdout, stderr = self._run_np_command(['application', 'list'])
+                returncode, stdout, stderr = self._run_np_command(['application', 'list'], account_id=self.account_id)
                 if returncode == 0:
                     try:
                         apps = json.loads(stdout)
@@ -434,7 +455,8 @@ class NullplatformSetup:
 
         returncode, stdout, stderr = self._run_np_command(
             ['parameter', 'create'],
-            json_body=param_def
+            json_body=param_def,
+            account_id=self.account_id
         )
 
         if returncode == 0:
@@ -457,7 +479,8 @@ class NullplatformSetup:
 
                     value_returncode, value_stdout, value_stderr = self._run_np_command(
                         ['parameter', 'value', 'create', '--id', param_id],
-                        json_body=value_config
+                        json_body=value_config,
+                        account_id=self.account_id
                     )
 
                     if value_returncode == 0:
@@ -521,7 +544,8 @@ class NullplatformSetup:
 
         returncode, stdout, stderr = self._run_np_command(
             ['scope', 'create'],
-            json_body=scope_config
+            json_body=scope_config,
+            account_id=self.account_id
         )
 
         if returncode == 0:
@@ -551,7 +575,7 @@ class NullplatformSetup:
             if 'already exists' in stderr.lower():
                 self.logger.warning(f"Scope {name} already exists")
                 # Try to get existing scope ID
-                returncode, stdout, stderr = self._run_np_command(['scope', 'list'])
+                returncode, stdout, stderr = self._run_np_command(['scope', 'list'], account_id=self.account_id)
                 if returncode == 0:
                     try:
                         scopes = json.loads(stdout)
@@ -584,6 +608,9 @@ class NullplatformSetup:
         Returns list of SetupResult objects.
         """
         import time
+
+        # Store account_id from config for use in all commands
+        self.account_id = config.account_id
 
         results = []
         start_time = time.time()
