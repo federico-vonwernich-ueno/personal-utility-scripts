@@ -52,29 +52,38 @@ applications:
       url: "https://github.com/my-org/full-stack-app"
     # description: "Full stack application"  # Optional fields supported
 
-    # Scopes can include additional configuration fields
-    # All fields are passed through to the Nullplatform API
+    # Scopes must include required API fields
+    # All fields are passed through to the Nullplatform API as-is
     scopes:
       - name: "development"
+        type: "web_pool"  # Required: scope type (e.g., "web_pool", "worker_pool")
         environment: "dev"
         region: "us-east-1"
-        target: "kubernetes"
-        ram: "2048"
         visibility: "private"
+        requested_spec:  # Required: compute resources specification
+          cpu_profile: "standard"
+          memory_in_gb: 1
+          local_storage_in_gb: 8
 
       - name: "staging"
+        type: "web_pool"
         environment: "staging"
         region: "us-east-1"
-        target: "kubernetes"
-        ram: "2048"
         visibility: "private"
+        requested_spec:
+          cpu_profile: "standard"
+          memory_in_gb: 1
+          local_storage_in_gb: 8
 
       - name: "production"
+        type: "web_pool"
         environment: "prod"
         region: "us-west-2"
-        target: "kubernetes"
-        ram: "4096"
         visibility: "public"
+        requested_spec:
+          cpu_profile: "standard"
+          memory_in_gb: 4
+          local_storage_in_gb: 8
 
     parameters:
       # Scope-specific parameters (different values per environment)
@@ -107,8 +116,8 @@ applications:
 # Everything is created in one run - no manual ID copying required!
 #
 # Note: All fields in applications, scopes, and parameters are passed through to
-# the Nullplatform API. You can add any additional fields supported by the API
-# (like environment, region, target, ram, visibility for scopes).
+# the Nullplatform API as-is. Scopes require 'type' and 'requested_spec' fields.
+# You can add any additional fields supported by the API.
 #
 # Usage:
 #   python nullplatform-setup.py --config nullplatform-setup.yaml
