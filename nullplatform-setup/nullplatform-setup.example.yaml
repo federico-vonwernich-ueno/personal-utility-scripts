@@ -4,9 +4,14 @@
 # Each application contains its own scopes and parameters.
 #
 # Prerequisites:
+# - Nullplatform Organization ID (required - get with: np organization list --format json)
 # - Nullplatform Account ID (required - get with: np account list --format json)
 # - Namespace must already exist (create with: np namespace create --body '{"name":"my-namespace"}')
 # - Get namespace name with: np namespace list --format json
+
+# Organization ID (required)
+# Your Nullplatform organization ID - get it with: np organization list --format json
+organization_id: "your-organization-id-here"
 
 # Account ID (required)
 # Your Nullplatform account ID - get it with: np account list --format json
@@ -35,15 +40,30 @@ applications:
       - name: "production"
 
     parameters:
+      # Simple parameter with defaults
+      # Default type=environment, encoding=plaintext, secret=false, read_only=false
+      # Default variable name is the parameter name
       - name: "DATABASE_URL"
         value: "postgres://localhost:5432/mydb"
 
+      # Secret parameter
       - name: "API_KEY"
         value: "sk-xxxxx"
-        # secret: true  # Mark as secret if sensitive
+        secret: true  # Mark as secret if sensitive
+        variable: "API_KEY"  # Optional: defaults to parameter name
 
+      # Simple parameter
       - name: "LOG_LEVEL"
         value: "info"
+
+      # File parameter with custom encoding
+      - name: "config.json"
+        type: "file"
+        destination_path: "/app/config.json"
+        encoding: "base64"
+        secret: false
+        read_only: false
+        value: "eyJrZXkiOiJ2YWx1ZSJ9"  # Base64 encoded content
 
   # Example 3: Application with scope-specific parameters and full scope configuration
   - name: "full-stack-app"
@@ -113,10 +133,26 @@ applications:
 # 1. Script resolves namespace name to ID automatically
 # 2. Creates each application in the specified namespace
 # 3. Creates all scopes for that application (using application ID)
-# 4. Creates all parameters for that application (using application ID)
+# 4. Creates all parameters for that application (using application NRN)
 # 5. Scope references in parameters are resolved automatically within the same app
 #
 # Everything is created in one run - no manual ID copying required!
+#
+# Parameter Fields:
+# Required fields (defaults provided if not specified):
+#   - name: Parameter name (required, no default)
+#   - type: "environment" (default) or "file"
+#   - encoding: "plaintext" (default) or "base64"
+#   - secret: false (default) or true
+#   - read_only: false (default) or true
+#
+# Conditional required fields:
+#   - variable: Required for type=environment (defaults to parameter name)
+#   - destination_path: Required for type=file (no default, must be specified)
+#
+# Optional fields:
+#   - value: Parameter value (can be set later)
+#   - scope: Scope name to associate this parameter with (optional)
 #
 # Note: All fields in applications, scopes, and parameters are passed through to
 # the Nullplatform API as-is. Scopes require 'type' and 'requested_spec' fields.

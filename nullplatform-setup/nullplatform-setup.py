@@ -37,6 +37,7 @@ class SetupResult:
 @dataclass
 class Config:
     """Configuration for nullplatform setup"""
+    organization_id: Optional[str]  # Nullplatform organization ID (required)
     account_id: Optional[str]  # Nullplatform account ID (required)
     applications: List[Dict]  # Each application contains nested scopes and parameters
 
@@ -47,6 +48,7 @@ class NullplatformSetup:
     def __init__(self, api_key: Optional[str] = None, dry_run: bool = False,
                  verbose: bool = False, np_path: str = "np"):
         self.api_key = api_key or os.environ.get('NULLPLATFORM_API_KEY')
+        self.organization_id = None  # Set later from config in setup_all()
         self.account_id = None  # Set later from config in setup_all()
         self.dry_run = dry_run
         self.verbose = verbose
@@ -346,6 +348,21 @@ class NullplatformSetup:
                 f"Create one first: np namespace create --body '{{\"name\":\"{namespace_name}\"}}'"
             )
 
+    def _build_application_nrn(self, namespace_id: str, application_id: str) -> str:
+        """
+        Build an application NRN string from component IDs.
+
+        Args:
+            namespace_id: Namespace ID
+            application_id: Application ID
+
+        Returns:
+            NRN string in format: organization=X:account=Y:namespace=Z:application=W
+        """
+        nrn = f"organization={self.organization_id}:account={self.account_id}:namespace={namespace_id}:application={application_id}"
+        self.logger.debug(f"Built NRN: {nrn}")
+        return nrn
+
     def load_config(self, config_path: str) -> Config:
         """Load and validate configuration from YAML file"""
         self.logger.info(f"Loading configuration from {config_path}")
@@ -358,9 +375,21 @@ class NullplatformSetup:
             sys.exit(1)
 
         config = Config(
+            organization_id=data.get('organization_id'),
             account_id=data.get('account_id'),
             applications=data.get('applications', [])
         )
+
+        # Validate organization_id is provided
+        if not config.organization_id:
+            self.logger.error(
+                "Error: 'organization_id' is required in configuration file.\n\n"
+                "Add to your config file:\n"
+                "  organization_id: \"your-organization-id\"\n\n"
+                "Get your organization ID with:\n"
+                "  np organization list --format json"
+            )
+            sys.exit(1)
 
         # Validate account_id is provided
         if not config.account_id:
@@ -373,7 +402,7 @@ class NullplatformSetup:
             )
             sys.exit(1)
 
-        self.logger.info(f"Config loaded: account_id={config.account_id}, {len(config.applications)} applications")
+        self.logger.info(f"Config loaded: organization_id={config.organization_id}, account_id={config.account_id}, {len(config.applications)} applications")
 
         return config
 
@@ -454,8 +483,56 @@ class NullplatformSetup:
 
         self.logger.info(f"Creating parameter: {name}")
 
-        # First create the parameter definition
-        param_def = {k: v for k, v in param_config.items() if k != 'value'}
+        # Build the parameter definition with required API fields
+        # Remove fields that are not part of the API schema
+        param_def = {k: v for k, v in param_config.items() if k not in ['value', 'scope', 'application_id', 'namespace_id']}
+
+        # Build NRN from application_id and namespace_id
+        if 'application_id' in param_config and 'namespace_id' in param_config:
+            param_def['nrn'] = self._build_application_nrn(
+                str(param_config['namespace_id']),
+                str(param_config['application_id'])
+            )
+        else:
+            self.logger.error(f"Missing application_id or namespace_id for parameter {name}")
+            return SetupResult(
+                resource_type='parameter',
+                resource_name=name,
+                status='error',
+                message='Missing application_id or namespace_id'
+            )
+
+        # Set default values for required API fields if not provided
+        if 'type' not in param_def:
+            param_def['type'] = 'environment'
+            self.logger.debug(f"Setting default type=environment for parameter {name}")
+
+        if 'encoding' not in param_def:
+            param_def['encoding'] = 'plaintext'
+            self.logger.debug(f"Setting default encoding=plaintext for parameter {name}")
+
+        if 'secret' not in param_def:
+            param_def['secret'] = False
+            self.logger.debug(f"Setting default secret=false for parameter {name}")
+
+        if 'read_only' not in param_def:
+            param_def['read_only'] = False
+            self.logger.debug(f"Setting default read_only=false for parameter {name}")
+
+        # Set variable name for environment type parameters
+        if param_def['type'] == 'environment' and 'variable' not in param_def:
+            param_def['variable'] = name
+            self.logger.debug(f"Setting default variable={name} for environment parameter {name}")
+
+        # Validate required conditional fields
+        if param_def['type'] == 'file' and 'destination_path' not in param_def:
+            self.logger.error(f"Parameter {name} has type=file but missing destination_path")
+            return SetupResult(
+                resource_type='parameter',
+                resource_name=name,
+                status='error',
+                message='File type parameters require destination_path'
+            )
 
         returncode, stdout, stderr = self._run_np_command(
             ['parameter', 'create'],
@@ -613,7 +690,8 @@ class NullplatformSetup:
         """
         import time
 
-        # Store account_id from config for use in all commands
+        # Store organization_id and account_id from config for use in all commands
+        self.organization_id = config.organization_id
         self.account_id = config.account_id
 
         results = []
@@ -701,6 +779,7 @@ class NullplatformSetup:
             parameters = app_config.get('parameters', [])
             for param_config in parameters:
                 param_config['application_id'] = app_id
+                param_config['namespace_id'] = app_config.get('namespace_id')
 
                 # Resolve scope reference if present
                 if 'scope' in param_config:
