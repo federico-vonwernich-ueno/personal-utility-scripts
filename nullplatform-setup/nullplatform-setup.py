@@ -305,7 +305,10 @@ class NullplatformSetup:
             self.logger.debug(f"Raw namespace list response: {stdout[:]}")
 
         try:
-            namespaces = json.loads(stdout)
+            response = json.loads(stdout)
+            # Extract namespaces from paginated response structure
+            namespaces = response.get('results', []) if isinstance(response, dict) else response
+            self.logger.debug(f"Found {len(namespaces)} namespace(s)")
         except json.JSONDecodeError as e:
             # Show what we tried to parse to help debugging
             stdout_preview = stdout[:500] if len(stdout) > 500 else stdout
@@ -421,7 +424,9 @@ class NullplatformSetup:
                 returncode, stdout, stderr = self._run_np_command(['application', 'list'], account_id=self.account_id)
                 if returncode == 0:
                     try:
-                        apps = json.loads(stdout)
+                        response = json.loads(stdout)
+                        # Extract applications from paginated response structure
+                        apps = response.get('results', []) if isinstance(response, dict) else response
                         for app in apps:
                             if app.get('name') == name:
                                 self.resource_ids['applications'][name] = app.get('id')
@@ -578,7 +583,9 @@ class NullplatformSetup:
                 returncode, stdout, stderr = self._run_np_command(['scope', 'list'], account_id=self.account_id)
                 if returncode == 0:
                     try:
-                        scopes = json.loads(stdout)
+                        response = json.loads(stdout)
+                        # Extract scopes from paginated response structure
+                        scopes = response.get('results', []) if isinstance(response, dict) else response
                         for scope in scopes:
                             if scope.get('name') == name:
                                 self.resource_ids['scopes'][name] = scope.get('id')
