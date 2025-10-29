@@ -1508,7 +1508,7 @@ for REPO in $REPOS; do
         else
           echo "     ⚠ Tecnología NO coincide"
           tech_mismatches=$((tech_mismatches + 1))
-          TECH_MISMATCHES[$REPO]="CSV: $csv_tech ($normalized_csv_tech) vs Detected: $PROJECT_TYPE"
+          TECH_MISMATCHES["$REPO"]="CSV: $csv_tech ($normalized_csv_tech) vs Detected: $PROJECT_TYPE"
         fi
       fi
     else
