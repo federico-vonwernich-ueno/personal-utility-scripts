@@ -126,13 +126,13 @@ class NullplatformSetup:
         Args:
             command: Command parts (e.g., ['application', 'create'])
             json_body: Optional JSON body to pass via --body
-            account_id: Optional account ID to pass via --account-id
+            account_id: Optional account ID to pass via --account_id
         """
         cmd = [self.np_path] + command
 
         # Add account ID if provided
         if account_id:
-            cmd.extend(['--account-id', account_id])
+            cmd.extend(['--account_id', account_id])
 
         # Add API key if provided
         if self.api_key:
