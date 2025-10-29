@@ -302,7 +302,7 @@ class NullplatformSetup:
 
         # Show raw response if verbose (helps debug JSON parsing issues)
         if self.verbose and stdout:
-            self.logger.debug(f"Raw namespace list response (first 500 chars): {stdout[:500]}")
+            self.logger.debug(f"Raw namespace list response: {stdout[:]}")
 
         try:
             namespaces = json.loads(stdout)
