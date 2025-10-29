@@ -360,7 +360,23 @@ class NullplatformSetup:
             NRN string in format: organization=X:account=Y:namespace=Z:application=W
         """
         nrn = f"organization={self.organization_id}:account={self.account_id}:namespace={namespace_id}:application={application_id}"
-        self.logger.debug(f"Built NRN: {nrn}")
+        self.logger.debug(f"Built application NRN: {nrn}")
+        return nrn
+
+    def _build_scope_nrn(self, namespace_id: str, application_id: str, scope_id: str) -> str:
+        """
+        Build a scope NRN string from component IDs.
+
+        Args:
+            namespace_id: Namespace ID
+            application_id: Application ID
+            scope_id: Scope ID
+
+        Returns:
+            NRN string in format: organization=X:account=Y:namespace=Z:application=W:scope=V
+        """
+        nrn = f"organization={self.organization_id}:account={self.account_id}:namespace={namespace_id}:application={application_id}:scope={scope_id}"
+        self.logger.debug(f"Built scope NRN: {nrn}")
         return nrn
 
     def load_config(self, config_path: str) -> Config:
@@ -553,9 +569,22 @@ class NullplatformSetup:
                         'value': param_config['value']
                     }
 
-                    # Add scope_id if provided
+                    # Build NRN for the parameter value
                     if 'scope_id' in param_config:
-                        value_config['scope_id'] = param_config['scope_id']
+                        # Scope-level NRN
+                        value_config['nrn'] = self._build_scope_nrn(
+                            str(param_config['namespace_id']),
+                            str(param_config['application_id']),
+                            str(param_config['scope_id'])
+                        )
+                        self.logger.debug(f"Using scope-level NRN for parameter value: {name}")
+                    else:
+                        # Application-level NRN
+                        value_config['nrn'] = self._build_application_nrn(
+                            str(param_config['namespace_id']),
+                            str(param_config['application_id'])
+                        )
+                        self.logger.debug(f"Using application-level NRN for parameter value: {name}")
 
                     value_returncode, value_stdout, value_stderr = self._run_np_command(
                         ['parameter', 'value', 'create', '--id', str(param_id)],
