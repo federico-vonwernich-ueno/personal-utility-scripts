@@ -588,8 +588,7 @@ class NullplatformSetup:
 
                     value_returncode, value_stdout, value_stderr = self._run_np_command(
                         ['parameter', 'value', 'create', '--id', str(param_id)],
-                        json_body=value_config,
-                        account_id=self.account_id
+                        json_body=value_config
                     )
 
                     if value_returncode == 0:
