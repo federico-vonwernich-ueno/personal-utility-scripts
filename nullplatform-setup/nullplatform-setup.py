@@ -390,8 +390,7 @@ class NullplatformSetup:
 
         returncode, stdout, stderr = self._run_np_command(
             ['application', 'create'],
-            json_body=api_config,
-            account_id=self.account_id
+            json_body=api_config
         )
 
         if returncode == 0:
@@ -460,8 +459,7 @@ class NullplatformSetup:
 
         returncode, stdout, stderr = self._run_np_command(
             ['parameter', 'create'],
-            json_body=param_def,
-            account_id=self.account_id
+            json_body=param_def
         )
 
         if returncode == 0:
@@ -549,8 +547,7 @@ class NullplatformSetup:
 
         returncode, stdout, stderr = self._run_np_command(
             ['scope', 'create'],
-            json_body=scope_config,
-            account_id=self.account_id
+            json_body=scope_config
         )
 
         if returncode == 0:
