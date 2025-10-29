@@ -14,7 +14,7 @@ Automate the creation of applications, parameters, and scopes in nullplatform us
 - Dry-run mode for preview before applying
 - Verbose logging for troubleshooting
 - JSON-based communication with `np` CLI
-- Slack integration for progress updates
+- Slack integration for completion summary
 
 ## Quick Start
 
@@ -51,17 +51,23 @@ chmod +x nullplatform-setup.py
 
 ## Configuration
 
-### Prerequisites
+### Required Information
 
-Before using the script, you need:
+Before creating your config file, gather these IDs:
 
-**1. Account ID (required)**
+**1. Organization ID (required)**
+```bash
+# Get your organization ID
+np organization list --format json
+```
+
+**2. Account ID (required)**
 ```bash
 # Get your account ID
 np account list --format json
 ```
 
-**2. Existing Namespace**
+**3. Existing Namespace**
 ```bash
 # Create a namespace
 np namespace create --body '{"name":"my-namespace"}'
@@ -72,46 +78,34 @@ np namespace list --format json
 
 ### Configuration File
 
-Create `nullplatform-setup.yaml` with nested structure:
+Create `nullplatform-setup.yaml`:
 
 ```yaml
+# Organization ID (required)
+organization_id: "your-organization-id-here"
+
 # Account ID (required)
 account_id: "your-account-id-here"
 
 applications:
   - name: "my-web-app"
     namespace: "my-namespace"  # Reference existing namespace by name
+    repository_url: "https://github.com/my-org/my-web-app"
 
     scopes:
       - name: "development"
-      - name: "staging"
       - name: "production"
 
     parameters:
       - name: "DATABASE_URL"
         value: "postgres://localhost:5432/mydb"
 
-      - name: "LOG_LEVEL"
-        scope: "development"  # Scope-specific value
-        value: "debug"
-
-      - name: "LOG_LEVEL"
-        scope: "production"
-        value: "error"
-
-  - name: "my-api-service"
-    namespace: "my-namespace"
-    repository:
-      url: "https://github.com/my-org/my-api-service"
-
-    scopes:
-      - name: "development"
-      - name: "production"
-
-    parameters:
       - name: "API_KEY"
         value: "sk-xxxxx"
+        secret: true
 ```
+
+For more detailed examples and all available configuration options, see `nullplatform-setup.example.yaml`.
 
 ### Key Features
 
@@ -122,41 +116,19 @@ applications:
 - Application IDs are captured and used for nested resources
 - Scope references in parameters are resolved by name
 
-**Repository Connection**: Optionally connect applications to Git repositories:
+**Repository Connection**: Connect applications to Git repositories:
 ```yaml
 applications:
   - name: "my-app"
     namespace: "my-namespace"
-    repository:
-      url: "https://github.com/my-org/my-app"
+    repository_url: "https://github.com/my-org/my-app"  # Required
 ```
 
-The `repository` field associates your application with a Git repository, enabling:
-- Automatic CI/CD integration
-- Source code tracking
-- Repository-based deployments
-
-**Note**: The repository must already exist in your Git provider.
+The `repository_url` field (required) associates your application with a Git repository, enabling automatic CI/CD integration, source code tracking, and repository-based deployments. The repository must already exist in your Git provider.
 
 ### Scope-Specific Parameters
 
-Parameters can be application-level or scope-specific:
-
-```yaml
-parameters:
-  # Application-level (applies to all scopes)
-  - name: "FEATURE_FLAGS"
-    value: "new-ui,analytics"
-
-  # Scope-specific (different values per environment)
-  - name: "API_URL"
-    scope: "development"
-    value: "https://api-dev.example.com"
-
-  - name: "API_URL"
-    scope: "production"
-    value: "https://api.example.com"
-```
+Parameters can be application-level (applies to all scopes) or scope-specific (different values per environment). Use the `scope` field to target specific scopes. See `nullplatform-setup.example.yaml` for detailed examples of parameter types, encoding options, and scope targeting.
 
 ## Usage
 
@@ -335,24 +307,18 @@ python nullplatform-setup.py
 
 ## Slack Notifications
 
-The script supports threaded Slack notifications for:
-- Setup start with configuration details
-- Real-time progress updates for each resource
-- Summary with statistics and resource breakdown
+The script sends a single summary notification upon completion with:
+- Total resources processed (created, existing, errors)
+- Duration of the setup
+- Breakdown by resource type
+- Error details if any failures occurred
 
 Setup:
 1. Install dependencies: `pip install slack-sdk urllib3`
 2. Configure environment variables (see [Slack Integration Guide](../docs/SLACK_INTEGRATION.md))
-3. Run script normally - notifications sent automatically
+3. Run script normally - notification sent automatically at completion
 
-### Custom Templates
-
-This script uses custom Slack notification templates located in `templates/`:
-- `nullplatform_setup_start.json` - Setup start notification
-- `nullplatform_setup_progress.json` - Resource creation progress
-- `nullplatform_setup_summary.json` - Final summary
-
-These templates are automatically used when Slack notifications are enabled.
+The script uses a custom Slack notification template located at `templates/nullplatform_setup_summary.json`.
 
 ## Best Practices
 

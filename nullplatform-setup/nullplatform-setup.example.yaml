@@ -1,13 +1,7 @@
-# Nullplatform Setup Configuration
+# Nullplatform Setup Configuration Example
 #
-# This configuration file defines applications and their nested resources.
-# Each application contains its own scopes and parameters.
-#
-# Prerequisites:
-# - Nullplatform Organization ID (required - get with: np organization list --format json)
-# - Nullplatform Account ID (required - get with: np account list --format json)
-# - Namespace must already exist (create with: np namespace create --body '{"name":"my-namespace"}')
-# - Get namespace name with: np namespace list --format json
+# Each application contains nested scopes and parameters.
+# See README.md for prerequisites and usage instructions.
 
 # Organization ID (required)
 # Your Nullplatform organization ID - get it with: np organization list --format json
@@ -20,158 +14,38 @@ account_id: "your-account-id-here"
 # Applications
 # Each application can contain nested scopes and parameters
 applications:
-  # Example 1: Simple application with scopes only
+  # Example 1: Basic application
   - name: "my-web-app"
-    namespace: "my-namespace"  # Reference existing namespace by name
-    repository_url: "https://github.com/my-org/my-web-app"  # Required: Git repository URL
+    namespace: "my-namespace"  # Must exist - create with: np namespace create
+    repository_url: "https://github.com/my-org/my-web-app"  # Required
 
     scopes:
       - name: "development"
       - name: "staging"
       - name: "production"
 
-  # Example 2: Application with repository and parameters
-  # Note: You can use either flat 'repository_url' or nested 'repository.url' format
+  # Example 2: Application with parameters
   - name: "my-api-service"
     namespace: "my-namespace"
-    repository_url: "https://github.com/my-org/my-api-service"  # Recommended: flat format
-    # Alternative nested format (also supported):
-    # repository:
-    #   url: "https://github.com/my-org/my-api-service"
+    repository_url: "https://github.com/my-org/my-api-service"
 
     scopes:
       - name: "development"
       - name: "production"
 
     parameters:
-      # Simple parameter with defaults
-      # Default type=environment, encoding=plaintext, secret=false, read_only=false
-      # Default variable name is the parameter name
+      # Environment variable (default type)
       - name: "DATABASE_URL"
         value: "postgres://localhost:5432/mydb"
 
       # Secret parameter
       - name: "API_KEY"
         value: "sk-xxxxx"
-        secret: true  # Mark as secret if sensitive
-        variable: "API_KEY"  # Optional: defaults to parameter name
+        secret: true
 
-      # Simple parameter
-      - name: "LOG_LEVEL"
-        value: "info"
-
-      # File parameter with custom encoding
+      # File parameter
       - name: "config.json"
         type: "file"
         destination_path: "/app/config.json"
         encoding: "base64"
-        secret: false
-        read_only: false
-        value: "eyJrZXkiOiJ2YWx1ZSJ9"  # Base64 encoded content
-
-  # Example 3: Application with scope-specific parameters and full scope configuration
-  - name: "full-stack-app"
-    namespace: "my-namespace"
-    repository_url: "https://github.com/my-org/full-stack-app"
-    # description: "Full stack application"  # Optional fields supported
-
-    # Scopes must include required API fields
-    # All fields are passed through to the Nullplatform API as-is
-    scopes:
-      - name: "development"
-        type: "web_pool"  # Required: scope type (e.g., "web_pool", "worker_pool")
-        dimensions:  # Required: environment and region metadata
-          environment: "dev"
-          region: "us-east-1"
-        visibility: "private"
-        requested_spec:  # Required: compute resources specification
-          cpu_profile: "standard"
-          memory_in_gb: 1
-          local_storage_in_gb: 8
-
-      - name: "staging"
-        type: "web_pool"
-        dimensions:
-          environment: "staging"
-          region: "us-east-1"
-        visibility: "private"
-        requested_spec:
-          cpu_profile: "standard"
-          memory_in_gb: 1
-          local_storage_in_gb: 8
-
-      - name: "production"
-        type: "web_pool"
-        dimensions:
-          environment: "prod"
-          region: "us-west-2"
-        visibility: "public"
-        requested_spec:
-          cpu_profile: "standard"
-          memory_in_gb: 4
-          local_storage_in_gb: 8
-
-    parameters:
-      # Scope-specific parameters (different values per environment)
-      - name: "API_BASE_URL"
-        scope: "development"  # Reference scope by name
-        value: "https://api-dev.example.com"
-
-      - name: "API_BASE_URL"
-        scope: "staging"
-        value: "https://api-staging.example.com"
-
-      - name: "API_BASE_URL"
-        scope: "production"
-        value: "https://api.example.com"
-
-      # Application-level parameters (no scope = applies to all environments)
-      - name: "FEATURE_FLAGS"
-        value: "new-ui,analytics,dark-mode"
-
-      - name: "MAX_UPLOAD_SIZE"
-        value: "10485760"  # 10MB in bytes
-
-# How It Works:
-# 1. Script resolves namespace name to ID automatically
-# 2. Creates each application in the specified namespace
-# 3. Creates all scopes for that application (using application ID)
-# 4. Creates all parameters for that application (using application NRN)
-# 5. Scope references in parameters are resolved automatically within the same app
-#
-# Everything is created in one run - no manual ID copying required!
-#
-# Application Fields:
-# Required fields:
-#   - name: Application name (required)
-#   - namespace: Namespace name reference (required, resolved to namespace_id)
-#   - repository_url: Git repository URL (required)
-#     Supported formats:
-#       1. Flat format (recommended): repository_url: "https://github.com/org/repo"
-#       2. Nested format: repository: { url: "https://github.com/org/repo" }
-#       3. Simplified: repository: "https://github.com/org/repo"
-#
-# Parameter Fields:
-# Required fields (defaults provided if not specified):
-#   - name: Parameter name (required, no default)
-#   - type: "environment" (default) or "file"
-#   - encoding: "plaintext" (default) or "base64"
-#   - secret: false (default) or true
-#   - read_only: false (default) or true
-#
-# Conditional required fields:
-#   - variable: Required for type=environment (defaults to parameter name)
-#   - destination_path: Required for type=file (no default, must be specified)
-#
-# Optional fields:
-#   - value: Parameter value (can be set later)
-#   - scope: Scope name to associate this parameter with (optional)
-#
-# Note: All fields in applications, scopes, and parameters are passed through to
-# the Nullplatform API as-is. Scopes require 'type' and 'requested_spec' fields.
-# You can add any additional fields supported by the API.
-#
-# Usage:
-#   python nullplatform-setup.py --config nullplatform-setup.yaml
-#   python nullplatform-setup.py --config nullplatform-setup.yaml --dry-run  # Preview first
-#   python nullplatform-setup.py --config nullplatform-setup.yaml --verbose  # Debug info
+        value: "eyJrZXkiOiJ2YWx1ZSJ9"

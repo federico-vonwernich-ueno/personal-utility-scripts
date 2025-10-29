@@ -2,8 +2,9 @@
 """
 Nullplatform Setup Script
 
-Automates the creation of applications, parameters, and scopes in nullplatform
-using the np CLI based on a YAML configuration file.
+Automates creation of nullplatform resources (applications, scopes, parameters)
+from YAML configuration using the np CLI. Supports dry-run mode, automatic ID
+tracking, and optional Slack notifications.
 """
 
 import argparse
@@ -22,6 +23,37 @@ try:
 except ImportError:
     print("Error: PyYAML is required. Install it with: pip install PyYAML")
     sys.exit(1)
+
+
+# Exit codes
+EXIT_SUCCESS = 0
+EXIT_ERROR = 1
+SLACK_MISSING_DEPENDENCY = 2
+SLACK_NO_TOKEN = 3
+SLACK_NO_CHANNEL = 4
+
+# Resource statuses
+STATUS_CREATED = 'created'
+STATUS_EXISTS = 'exists'
+STATUS_ERROR = 'error'
+
+# Resource types
+RESOURCE_APPLICATION = 'application'
+RESOURCE_PARAMETER = 'parameter'
+RESOURCE_SCOPE = 'scope'
+RESOURCE_NAMESPACE = 'namespace'
+
+# Parameter types and defaults
+PARAM_TYPE_ENVIRONMENT = 'environment'
+PARAM_TYPE_FILE = 'file'
+PARAM_ENCODING_PLAINTEXT = 'plaintext'
+PARAM_ENCODING_BASE64 = 'base64'
+
+# Environment variables
+ENV_NULLPLATFORM_API_KEY = 'NULLPLATFORM_API_KEY'
+ENV_SLACK_DRY_RUN = 'SLACK_DRY_RUN'
+ENV_SLACK_BOT_TOKEN = 'SLACK_BOT_TOKEN'
+ENV_SLACK_CHANNEL = 'SLACK_CHANNEL'
 
 
 @dataclass
@@ -47,7 +79,7 @@ class NullplatformSetup:
 
     def __init__(self, api_key: Optional[str] = None, dry_run: bool = False,
                  verbose: bool = False, np_path: str = "np"):
-        self.api_key = api_key or os.environ.get('NULLPLATFORM_API_KEY')
+        self.api_key = api_key or os.environ.get(ENV_NULLPLATFORM_API_KEY)
         self.organization_id = None  # Set later from config in setup_all()
         self.account_id = None  # Set later from config in setup_all()
         self.dry_run = dry_run
@@ -379,6 +411,164 @@ class NullplatformSetup:
         self.logger.debug(f"Built scope NRN: {nrn}")
         return nrn
 
+    def _handle_api_response(self, resource_type: str, resource_name: str,
+                            returncode: int, stdout: str, stderr: str,
+                            resource_dict_key: str = None) -> SetupResult:
+        """
+        Handle API response and return SetupResult.
+        Consolidates common response handling logic across all create_* methods.
+
+        Args:
+            resource_type: Type of resource ('application', 'parameter', 'scope')
+            resource_name: Name of the resource
+            returncode: Command return code
+            stdout: Command stdout
+            stderr: Command stderr
+            resource_dict_key: Optional key for self.resource_ids dict (defaults to resource_type + 's')
+
+        Returns:
+            SetupResult object
+        """
+        if resource_dict_key is None:
+            resource_dict_key = resource_type + 's'
+
+        if returncode == 0:
+            try:
+                response = json.loads(stdout)
+                resource_id = response.get('id')
+
+                if resource_dict_key in self.resource_ids:
+                    self.resource_ids[resource_dict_key][resource_name] = resource_id
+
+                self.logger.info(f"✓ Created {resource_type}: {resource_name} (ID: {resource_id})")
+                return SetupResult(
+                    resource_type=resource_type,
+                    resource_name=resource_name,
+                    status=STATUS_CREATED,
+                    message=f'{resource_type.capitalize()} created successfully',
+                    resource_id=resource_id
+                )
+            except json.JSONDecodeError:
+                self.logger.error(f"Failed to parse response: {stdout}")
+                return SetupResult(
+                    resource_type=resource_type,
+                    resource_name=resource_name,
+                    status=STATUS_ERROR,
+                    message=f'Failed to parse response: {stdout}'
+                )
+        else:
+            # Command failed
+            self.logger.error(f"Failed to create {resource_type}: {stderr}")
+            return SetupResult(
+                resource_type=resource_type,
+                resource_name=resource_name,
+                status=STATUS_ERROR,
+                message=f'Error: {stderr}'
+            )
+
+    def _lookup_existing_resource(self, resource_type: str, resource_name: str) -> Optional[str]:
+        """
+        Look up existing resource ID by name.
+        Consolidates duplicate lookup logic for "already exists" scenarios.
+
+        Args:
+            resource_type: Type of resource ('application', 'scope', etc.)
+            resource_name: Name of the resource to find
+
+        Returns:
+            Resource ID if found, None otherwise
+        """
+        list_command = [resource_type, 'list']
+        returncode, stdout, stderr = self._run_np_command(list_command, account_id=self.account_id)
+
+        if returncode == 0:
+            try:
+                response = json.loads(stdout)
+                # Extract resources from paginated response structure
+                resources = response.get('results', []) if isinstance(response, dict) else response
+
+                for resource in resources:
+                    if resource.get('name') == resource_name:
+                        resource_id = resource.get('id')
+                        self.logger.debug(f"Found existing {resource_type} '{resource_name}' with ID: {resource_id}")
+                        return resource_id
+            except Exception as e:
+                self.logger.debug(f"Failed to lookup existing {resource_type}: {e}")
+
+        return None
+
+    def _handle_already_exists(self, resource_type: str, resource_name: str) -> SetupResult:
+        """
+        Handle 'already exists' scenario for resources.
+
+        Args:
+            resource_type: Type of resource ('application', 'scope', 'parameter')
+            resource_name: Name of the resource
+
+        Returns:
+            SetupResult with 'exists' status
+        """
+        self.logger.warning(f"{resource_type.capitalize()} {resource_name} already exists")
+
+        # Try to get existing resource ID
+        existing_id = self._lookup_existing_resource(resource_type, resource_name)
+        resource_dict_key = resource_type + 's'
+
+        if existing_id and resource_dict_key in self.resource_ids:
+            self.resource_ids[resource_dict_key][resource_name] = existing_id
+
+        return SetupResult(
+            resource_type=resource_type,
+            resource_name=resource_name,
+            status=STATUS_EXISTS,
+            message=f'{resource_type.capitalize()} already exists'
+        )
+
+    def _create_parameter_value(self, param_name: str, param_id: str, param_config: Dict) -> Tuple[bool, str]:
+        """
+        Create a value for a parameter.
+
+        Args:
+            param_name: Name of the parameter
+            param_id: ID of the parameter
+            param_config: Parameter configuration dict
+
+        Returns:
+            Tuple of (success: bool, message: str)
+        """
+        value_config = {
+            'value': param_config['value']
+        }
+
+        # Build NRN for the parameter value
+        if 'scope_id' in param_config:
+            # Scope-level NRN
+            value_config['nrn'] = self._build_scope_nrn(
+                str(param_config['namespace_id']),
+                str(param_config['application_id']),
+                str(param_config['scope_id'])
+            )
+            self.logger.debug(f"Using scope-level NRN for parameter value: {param_name}")
+        else:
+            # Application-level NRN
+            value_config['nrn'] = self._build_application_nrn(
+                str(param_config['namespace_id']),
+                str(param_config['application_id'])
+            )
+            self.logger.debug(f"Using application-level NRN for parameter value: {param_name}")
+
+        returncode, stdout, stderr = self._run_np_command(
+            ['parameter', 'value', 'create', '--id', str(param_id)],
+            json_body=value_config
+        )
+
+        if returncode == 0:
+            self.logger.info(f"✓ Set value for parameter: {param_name}")
+            return True, 'Parameter created and value set successfully'
+        else:
+            self.logger.warning(f"Created parameter but failed to set value: {stderr}")
+            return False, f'Parameter created but value not set: {stderr}'
+
     def load_config(self, config_path: str) -> Config:
         """Load and validate configuration from YAML file"""
         self.logger.info(f"Loading configuration from {config_path}")
@@ -454,9 +644,9 @@ class NullplatformSetup:
                 f"    url: \"https://github.com/your-org/your-repo\""
             )
             return SetupResult(
-                resource_type='application',
+                resource_type=RESOURCE_APPLICATION,
                 resource_name=name,
-                status='error',
+                status=STATUS_ERROR,
                 message='Missing required field: repository_url'
             )
 
@@ -465,60 +655,12 @@ class NullplatformSetup:
             json_body=api_config
         )
 
-        if returncode == 0:
-            try:
-                response = json.loads(stdout)
-                app_id = response.get('id')
-                self.resource_ids['applications'][name] = app_id
+        # Check if application already exists
+        if returncode != 0 and 'already exists' in stderr.lower():
+            return self._handle_already_exists(RESOURCE_APPLICATION, name)
 
-                self.logger.info(f"✓ Created application: {name} (ID: {app_id})")
-                return SetupResult(
-                    resource_type='application',
-                    resource_name=name,
-                    status='created',
-                    message='Application created successfully',
-                    resource_id=app_id
-                )
-            except json.JSONDecodeError:
-                self.logger.error(f"Failed to parse response: {stdout}")
-                return SetupResult(
-                    resource_type='application',
-                    resource_name=name,
-                    status='error',
-                    message=f'Failed to parse response: {stdout}'
-                )
-        else:
-            # Check if application already exists
-            if 'already exists' in stderr.lower():
-                self.logger.warning(f"Application {name} already exists")
-                # Try to get existing application ID
-                returncode, stdout, stderr = self._run_np_command(['application', 'list'], account_id=self.account_id)
-                if returncode == 0:
-                    try:
-                        response = json.loads(stdout)
-                        # Extract applications from paginated response structure
-                        apps = response.get('results', []) if isinstance(response, dict) else response
-                        for app in apps:
-                            if app.get('name') == name:
-                                self.resource_ids['applications'][name] = app.get('id')
-                                break
-                    except Exception:
-                        pass
-
-                return SetupResult(
-                    resource_type='application',
-                    resource_name=name,
-                    status='exists',
-                    message='Application already exists'
-                )
-
-            self.logger.error(f"Failed to create application: {stderr}")
-            return SetupResult(
-                resource_type='application',
-                resource_name=name,
-                status='error',
-                message=f'Error: {stderr}'
-            )
+        # Handle API response (success or other errors)
+        return self._handle_api_response(RESOURCE_APPLICATION, name, returncode, stdout, stderr)
 
     def create_parameter(self, param_config: Dict) -> SetupResult:
         """Create a parameter and optionally set its value"""
@@ -539,20 +681,20 @@ class NullplatformSetup:
         else:
             self.logger.error(f"Missing application_id or namespace_id for parameter {name}")
             return SetupResult(
-                resource_type='parameter',
+                resource_type=RESOURCE_PARAMETER,
                 resource_name=name,
-                status='error',
+                status=STATUS_ERROR,
                 message='Missing application_id or namespace_id'
             )
 
         # Set default values for required API fields if not provided
         if 'type' not in param_def:
-            param_def['type'] = 'environment'
-            self.logger.debug(f"Setting default type=environment for parameter {name}")
+            param_def['type'] = PARAM_TYPE_ENVIRONMENT
+            self.logger.debug(f"Setting default type={PARAM_TYPE_ENVIRONMENT} for parameter {name}")
 
         if 'encoding' not in param_def:
-            param_def['encoding'] = 'plaintext'
-            self.logger.debug(f"Setting default encoding=plaintext for parameter {name}")
+            param_def['encoding'] = PARAM_ENCODING_PLAINTEXT
+            self.logger.debug(f"Setting default encoding={PARAM_ENCODING_PLAINTEXT} for parameter {name}")
 
         if 'secret' not in param_def:
             param_def['secret'] = False
@@ -563,17 +705,17 @@ class NullplatformSetup:
             self.logger.debug(f"Setting default read_only=false for parameter {name}")
 
         # Set variable name for environment type parameters
-        if param_def['type'] == 'environment' and 'variable' not in param_def:
+        if param_def['type'] == PARAM_TYPE_ENVIRONMENT and 'variable' not in param_def:
             param_def['variable'] = name
             self.logger.debug(f"Setting default variable={name} for environment parameter {name}")
 
         # Validate required conditional fields
-        if param_def['type'] == 'file' and 'destination_path' not in param_def:
+        if param_def['type'] == PARAM_TYPE_FILE and 'destination_path' not in param_def:
             self.logger.error(f"Parameter {name} has type=file but missing destination_path")
             return SetupResult(
-                resource_type='parameter',
+                resource_type=RESOURCE_PARAMETER,
                 resource_name=name,
-                status='error',
+                status=STATUS_ERROR,
                 message='File type parameters require destination_path'
             )
 
@@ -582,94 +724,19 @@ class NullplatformSetup:
             json_body=param_def
         )
 
-        if returncode == 0:
-            try:
-                response = json.loads(stdout)
-                param_id = response.get('id')
-                self.resource_ids['parameters'][name] = param_id
+        # Check if parameter already exists
+        if returncode != 0 and 'already exists' in stderr.lower():
+            return self._handle_already_exists(RESOURCE_PARAMETER, name)
 
-                self.logger.info(f"✓ Created parameter: {name} (ID: {param_id})")
+        # Handle creation success/failure
+        result = self._handle_api_response(RESOURCE_PARAMETER, name, returncode, stdout, stderr)
 
-                # If value is provided, create parameter value
-                if 'value' in param_config:
-                    value_config = {
-                        'value': param_config['value']
-                    }
+        # If parameter created successfully and value provided, set the value
+        if result.status == STATUS_CREATED and 'value' in param_config:
+            success, message = self._create_parameter_value(name, result.resource_id, param_config)
+            result.message = message
 
-                    # Build NRN for the parameter value
-                    if 'scope_id' in param_config:
-                        # Scope-level NRN
-                        value_config['nrn'] = self._build_scope_nrn(
-                            str(param_config['namespace_id']),
-                            str(param_config['application_id']),
-                            str(param_config['scope_id'])
-                        )
-                        self.logger.debug(f"Using scope-level NRN for parameter value: {name}")
-                    else:
-                        # Application-level NRN
-                        value_config['nrn'] = self._build_application_nrn(
-                            str(param_config['namespace_id']),
-                            str(param_config['application_id'])
-                        )
-                        self.logger.debug(f"Using application-level NRN for parameter value: {name}")
-
-                    value_returncode, value_stdout, value_stderr = self._run_np_command(
-                        ['parameter', 'value', 'create', '--id', str(param_id)],
-                        json_body=value_config
-                    )
-
-                    if value_returncode == 0:
-                        self.logger.info(f"✓ Set value for parameter: {name}")
-                        return SetupResult(
-                            resource_type='parameter',
-                            resource_name=name,
-                            status='created',
-                            message='Parameter created and value set successfully',
-                            resource_id=param_id
-                        )
-                    else:
-                        self.logger.warning(f"Created parameter but failed to set value: {value_stderr}")
-                        return SetupResult(
-                            resource_type='parameter',
-                            resource_name=name,
-                            status='created',
-                            message=f'Parameter created but value not set: {value_stderr}',
-                            resource_id=param_id
-                        )
-
-                return SetupResult(
-                    resource_type='parameter',
-                    resource_name=name,
-                    status='created',
-                    message='Parameter created successfully',
-                    resource_id=param_id
-                )
-            except json.JSONDecodeError:
-                self.logger.error(f"Failed to parse response: {stdout}")
-                return SetupResult(
-                    resource_type='parameter',
-                    resource_name=name,
-                    status='error',
-                    message=f'Failed to parse response: {stdout}'
-                )
-        else:
-            # Check if parameter already exists
-            if 'already exists' in stderr.lower():
-                self.logger.warning(f"Parameter {name} already exists")
-                return SetupResult(
-                    resource_type='parameter',
-                    resource_name=name,
-                    status='exists',
-                    message='Parameter already exists'
-                )
-
-            self.logger.error(f"Failed to create parameter: {stderr}")
-            return SetupResult(
-                resource_type='parameter',
-                resource_name=name,
-                status='error',
-                message=f'Error: {stderr}'
-            )
+        return result
 
     def create_scope(self, scope_config: Dict) -> SetupResult:
         """Create a scope"""
@@ -682,60 +749,12 @@ class NullplatformSetup:
             json_body=scope_config
         )
 
-        if returncode == 0:
-            try:
-                response = json.loads(stdout)
-                scope_id = response.get('id')
-                self.resource_ids['scopes'][name] = scope_id
+        # Check if scope already exists
+        if returncode != 0 and 'already exists' in stderr.lower():
+            return self._handle_already_exists(RESOURCE_SCOPE, name)
 
-                self.logger.info(f"✓ Created scope: {name} (ID: {scope_id})")
-                return SetupResult(
-                    resource_type='scope',
-                    resource_name=name,
-                    status='created',
-                    message='Scope created successfully',
-                    resource_id=scope_id
-                )
-            except json.JSONDecodeError:
-                self.logger.error(f"Failed to parse response: {stdout}")
-                return SetupResult(
-                    resource_type='scope',
-                    resource_name=name,
-                    status='error',
-                    message=f'Failed to parse response: {stdout}'
-                )
-        else:
-            # Check if scope already exists
-            if 'already exists' in stderr.lower():
-                self.logger.warning(f"Scope {name} already exists")
-                # Try to get existing scope ID
-                returncode, stdout, stderr = self._run_np_command(['scope', 'list'], account_id=self.account_id)
-                if returncode == 0:
-                    try:
-                        response = json.loads(stdout)
-                        # Extract scopes from paginated response structure
-                        scopes = response.get('results', []) if isinstance(response, dict) else response
-                        for scope in scopes:
-                            if scope.get('name') == name:
-                                self.resource_ids['scopes'][name] = scope.get('id')
-                                break
-                    except Exception:
-                        pass
-
-                return SetupResult(
-                    resource_type='scope',
-                    resource_name=name,
-                    status='exists',
-                    message='Scope already exists'
-                )
-
-            self.logger.error(f"Failed to create scope: {stderr}")
-            return SetupResult(
-                resource_type='scope',
-                resource_name=name,
-                status='error',
-                message=f'Error: {stderr}'
-            )
+        # Handle API response (success or other errors)
+        return self._handle_api_response(RESOURCE_SCOPE, name, returncode, stdout, stderr)
 
     def setup_all(self, config: Config) -> List[SetupResult]:
         """
@@ -745,25 +764,12 @@ class NullplatformSetup:
         """
         import time
 
-        # Store organization_id and account_id from config for use in all commands
         self.organization_id = config.organization_id
         self.account_id = config.account_id
 
         results = []
         start_time = time.time()
 
-        # Send Slack start notification
-        thread_ts = None
-        try:
-            slack_rc, thread_ts = send_setup_start_notification(config)
-            if slack_rc == 0:
-                self.logger.debug("[SLACK] Setup start notification sent successfully")
-            elif slack_rc not in (2, 3, 4):  # Ignore missing deps/config errors
-                self.logger.debug(f"[SLACK] Start notification failed with code {slack_rc}")
-        except Exception as e:
-            self.logger.debug(f"[SLACK] Failed to send start notification: {e}")
-
-        # Process each application with its nested resources
         for app_config in config.applications:
             app_name = app_config.get('name')
             self.logger.info(f"Processing application: {app_name}")
@@ -778,36 +784,19 @@ class NullplatformSetup:
                 except ValueError as e:
                     self.logger.error(str(e))
                     result = SetupResult(
-                        resource_type='application',
+                        resource_type=RESOURCE_APPLICATION,
                         resource_name=app_name,
-                        status='error',
+                        status=STATUS_ERROR,
                         message=str(e)
                     )
                     results.append(result)
-
-                    # Send Slack notification for error
-                    try:
-                        send_resource_notification(result, thread_ts=thread_ts)
-                    except Exception:
-                        pass
-
-                    continue  # Skip this application and its resources
+                    continue
 
             # 2. Create application
             app_result = self.create_application(app_config)
             results.append(app_result)
 
-            # Send Slack notification for application
-            try:
-                slack_rc = send_resource_notification(app_result, thread_ts=thread_ts)
-                if slack_rc == 0:
-                    self.logger.debug(f"[SLACK] Resource notification sent for {app_result.resource_name}")
-                elif slack_rc not in (2, 3, 4):
-                    self.logger.debug(f"[SLACK] Resource notification failed with code {slack_rc}")
-            except Exception as e:
-                self.logger.debug(f"[SLACK] Failed to send resource notification: {e}")
-
-            if app_result.status == 'error':
+            if app_result.status == STATUS_ERROR:
                 self.logger.error(f"Failed to create application {app_name}, skipping its scopes and parameters")
                 continue
 
@@ -820,23 +809,12 @@ class NullplatformSetup:
                 scope_result = self.create_scope(scope_config)
                 results.append(scope_result)
 
-                # Send Slack notification for scope
-                try:
-                    slack_rc = send_resource_notification(scope_result, thread_ts=thread_ts)
-                    if slack_rc == 0:
-                        self.logger.debug(f"[SLACK] Resource notification sent for {scope_result.resource_name}")
-                    elif slack_rc not in (2, 3, 4):
-                        self.logger.debug(f"[SLACK] Resource notification failed with code {slack_rc}")
-                except Exception as e:
-                    self.logger.debug(f"[SLACK] Failed to send resource notification: {e}")
-
             # 4. Create parameters for this application
             parameters = app_config.get('parameters', [])
             for param_config in parameters:
                 param_config['application_id'] = app_id
                 param_config['namespace_id'] = app_config.get('namespace_id')
 
-                # Resolve scope reference if present
                 if 'scope' in param_config:
                     scope_name = param_config['scope']
                     scope_id = self.resource_ids['scopes'].get(scope_name)
@@ -853,25 +831,13 @@ class NullplatformSetup:
                 param_result = self.create_parameter(param_config)
                 results.append(param_result)
 
-                # Send Slack notification for parameter
-                try:
-                    slack_rc = send_resource_notification(param_result, thread_ts=thread_ts)
-                    if slack_rc == 0:
-                        self.logger.debug(f"[SLACK] Resource notification sent for {param_result.resource_name}")
-                    elif slack_rc not in (2, 3, 4):
-                        self.logger.debug(f"[SLACK] Resource notification failed with code {slack_rc}")
-                except Exception as e:
-                    self.logger.debug(f"[SLACK] Failed to send resource notification: {e}")
-
-        # Calculate duration
         duration = time.time() - start_time
 
-        # Send Slack summary notification
         try:
-            slack_rc = send_setup_summary_notification(config, results, duration, thread_ts)
-            if slack_rc == 0:
+            slack_rc = send_setup_summary_notification(config, results, duration, thread_ts=None)
+            if slack_rc == EXIT_SUCCESS:
                 self.logger.debug("[SLACK] Summary notification sent successfully")
-            elif slack_rc not in (2, 3, 4):
+            elif slack_rc not in (SLACK_MISSING_DEPENDENCY, SLACK_NO_TOKEN, SLACK_NO_CHANNEL):
                 self.logger.debug(f"[SLACK] Summary notification failed with code {slack_rc}")
         except Exception as e:
             self.logger.debug(f"[SLACK] Failed to send summary notification: {e}")
@@ -880,10 +846,11 @@ class NullplatformSetup:
 
     def print_summary(self, results: List[SetupResult]):
         """Print summary of setup results"""
-        total = len(results)
-        created = sum(1 for r in results if r.status == 'created')
-        exists = sum(1 for r in results if r.status == 'exists')
-        errors = sum(1 for r in results if r.status == 'error')
+        stats = _calculate_setup_statistics(results)
+        total = stats['total']
+        created = stats['created']
+        exists = stats['exists']
+        errors = stats['errors']
 
         print("\n" + "="*60)
         print("SETUP SUMMARY")
@@ -897,13 +864,13 @@ class NullplatformSetup:
         if errors > 0:
             print("\nErrors encountered:")
             for result in results:
-                if result.status == 'error':
+                if result.status == STATUS_ERROR:
                     print(f"  - {result.resource_type}/{result.resource_name}: {result.message}")
 
         if exists > 0:
             print("\nResources that already exist:")
             for result in results:
-                if result.status == 'exists':
+                if result.status == STATUS_EXISTS:
                     print(f"  - {result.resource_type}/{result.resource_name}")
 
 
@@ -918,15 +885,15 @@ def validate_slack_config() -> Optional[int]:
     Returns:
         None if valid, or exit code if invalid/missing config
     """
-    dry_run_flag = os.environ.get("SLACK_DRY_RUN")
-    token = os.environ.get("SLACK_BOT_TOKEN")
-    channel = os.environ.get("SLACK_CHANNEL")
+    dry_run_flag = os.environ.get(ENV_SLACK_DRY_RUN)
+    token = os.environ.get(ENV_SLACK_BOT_TOKEN)
+    channel = os.environ.get(ENV_SLACK_CHANNEL)
 
     if not token and not dry_run_flag:
-        return 3  # SLACK_NO_TOKEN
+        return SLACK_NO_TOKEN
 
     if not channel and not dry_run_flag:
-        return 4  # SLACK_NO_CHANNEL
+        return SLACK_NO_CHANNEL
 
     return None
 
@@ -944,12 +911,12 @@ def check_slack_dependencies() -> Optional[int]:
         importlib.import_module('urllib3')
         return None
     except Exception:
-        dry_run_flag = os.environ.get("SLACK_DRY_RUN")
+        dry_run_flag = os.environ.get(ENV_SLACK_DRY_RUN)
 
         if dry_run_flag:
-            return None  # Allow dry-run to proceed
+            return None
         else:
-            return 2  # MISSING_DEPENDENCY
+            return SLACK_MISSING_DEPENDENCY
 
 
 def send_slack_notification(
@@ -986,7 +953,7 @@ def send_slack_notification(
         return config_error, None
 
     if not slack_script.exists():
-        return 2, None  # MISSING_DEPENDENCY
+        return SLACK_MISSING_DEPENDENCY, None
 
     # Check dependencies
     dep_error = check_slack_dependencies()
@@ -994,7 +961,7 @@ def send_slack_notification(
         return dep_error, None
 
     # Build command
-    dry_run_flag = bool(os.environ.get("SLACK_DRY_RUN"))
+    dry_run_flag = bool(os.environ.get(ENV_SLACK_DRY_RUN))
     cmd = [sys.executable, str(slack_script), "--title", title, "--status", status]
 
     if message:
@@ -1016,120 +983,25 @@ def send_slack_notification(
         result = subprocess.run(cmd, capture_output=True, text=True)
         return result.returncode, None
     except Exception:
-        return 1, None
+        return EXIT_ERROR, None
 
 
-def send_setup_start_notification(config: Config) -> Tuple[int, Optional[str]]:
+def _calculate_setup_statistics(results: List[SetupResult]) -> Dict:
     """
-    Send initial Slack notification when setup starts.
+    Calculate statistics from setup results.
 
     Args:
-        config: Configuration object
+        results: List of SetupResult objects
 
     Returns:
-        Tuple of (exit_code, thread_ts)
+        Dict with keys: total, created, exists, errors
     """
-    title = "Nullplatform Setup Starting"
-
-    resource_counts = {
-        'namespace': 1 if config.namespace else 0,
-        'applications': len(config.applications),
-        'scopes': len(config.scopes),
-        'parameters': len(config.parameters)
+    return {
+        'total': len(results),
+        'created': sum(1 for r in results if r.status == STATUS_CREATED),
+        'exists': sum(1 for r in results if r.status == STATUS_EXISTS),
+        'errors': sum(1 for r in results if r.status == STATUS_ERROR)
     }
-
-    total_resources = sum(resource_counts.values())
-
-    message_parts = [
-        f"*Total Resources:* {total_resources}\n"
-    ]
-
-    if config.namespace:
-        message_parts.append(f"*Namespace:* {config.namespace.get('name')}")
-
-    message_parts.append(f"*Applications:* {len(config.applications)}")
-    if config.applications:
-        app_list = "\n".join([f"• {app.get('name')}" for app in config.applications[:5]])
-        if len(config.applications) > 5:
-            app_list += f"\n• ... and {len(config.applications) - 5} more"
-        message_parts.append(app_list)
-
-    message_parts.append(f"\n*Scopes:* {len(config.scopes)}")
-    message_parts.append(f"*Parameters:* {len(config.parameters)}")
-
-    message = "\n".join(message_parts)
-
-    return send_slack_notification(
-        title,
-        message,
-        status="info",
-        template=str(Path(__file__).parent / "templates" / "nullplatform_setup_start.json"),
-        template_vars={
-            "TOTAL_RESOURCES": str(total_resources),
-            "NAMESPACE_NAME": config.namespace.get('name') if config.namespace else "N/A",
-            "APP_COUNT": str(len(config.applications)),
-            "SCOPE_COUNT": str(len(config.scopes)),
-            "PARAM_COUNT": str(len(config.parameters))
-        }
-    )
-
-
-def send_resource_notification(
-    result: SetupResult,
-    thread_ts: Optional[str] = None
-) -> int:
-    """
-    Send Slack notification for a single resource setup result.
-
-    Args:
-        result: SetupResult object
-        thread_ts: Thread timestamp for threading (optional)
-
-    Returns:
-        Exit code
-    """
-    # Map status to notification status and icon
-    status_map = {
-        'created': ('success', ':white_check_mark:', 'Created'),
-        'exists': ('info', ':information_source:', 'Already Exists'),
-        'error': ('failure', ':x:', 'Error')
-    }
-
-    slack_status, icon, action = status_map.get(result.status, ('info', ':speech_balloon:', 'Processed'))
-
-    title = f"{icon} {action}: {result.resource_type}/{result.resource_name}"
-
-    message_parts = [
-        f"*Resource Type:* {result.resource_type}",
-        f"*Name:* {result.resource_name}",
-        f"*Status:* {action}"
-    ]
-
-    if result.resource_id:
-        message_parts.append(f"*ID:* `{result.resource_id}`")
-
-    if result.message:
-        message_parts.append(f"\n_{result.message}_")
-
-    message = "\n".join(message_parts)
-
-    exit_code, _ = send_slack_notification(
-        title,
-        message,
-        status=slack_status,
-        template=str(Path(__file__).parent / "templates" / "nullplatform_setup_progress.json"),
-        template_vars={
-            "RESOURCE_TYPE": result.resource_type,
-            "RESOURCE_NAME": result.resource_name,
-            "STATUS": action,
-            "STATUS_ICON": icon,
-            "RESOURCE_ID": result.resource_id or "N/A",
-            "MESSAGE": result.message
-        },
-        thread_ts=thread_ts
-    )
-
-    return exit_code
 
 
 def send_setup_summary_notification(
@@ -1150,10 +1022,11 @@ def send_setup_summary_notification(
     Returns:
         Exit code
     """
-    total = len(results)
-    created = sum(1 for r in results if r.status == 'created')
-    exists = sum(1 for r in results if r.status == 'exists')
-    errors = sum(1 for r in results if r.status == 'error')
+    stats = _calculate_setup_statistics(results)
+    total = stats['total']
+    created = stats['created']
+    exists = stats['exists']
+    errors = stats['errors']
 
     # Determine overall status
     if errors > 0:
@@ -1184,7 +1057,7 @@ def send_setup_summary_notification(
     if errors > 0:
         error_list = []
         for result in results:
-            if result.status == 'error':
+            if result.status == STATUS_ERROR:
                 error_list.append(f"• {result.resource_type}/{result.resource_name}: {result.message}")
         if error_list:
             message_parts.append("\n*Errors:*")
@@ -1196,21 +1069,21 @@ def send_setup_summary_notification(
     by_type = {}
     for result in results:
         if result.resource_type not in by_type:
-            by_type[result.resource_type] = {'created': 0, 'exists': 0, 'error': 0}
+            by_type[result.resource_type] = {STATUS_CREATED: 0, STATUS_EXISTS: 0, STATUS_ERROR: 0}
         by_type[result.resource_type][result.status] += 1
 
     if by_type:
         message_parts.append("\n*By Resource Type:*")
         for resource_type, counts in by_type.items():
             message_parts.append(
-                f"• {resource_type}: {counts['created']} created, "
-                f"{counts['exists']} existing, {counts['error']} errors"
+                f"• {resource_type}: {counts[STATUS_CREATED]} created, "
+                f"{counts[STATUS_EXISTS]} existing, {counts[STATUS_ERROR]} errors"
             )
 
     message = "\n".join(message_parts)
 
     error_list_str = "\n".join([f"{r.resource_type}/{r.resource_name}: {r.message}"
-                                for r in results if r.status == 'error'][:10])
+                                for r in results if r.status == STATUS_ERROR][:10])
 
     exit_code, _ = send_slack_notification(
         title,
@@ -1279,7 +1152,7 @@ Environment Variables:
     args = parser.parse_args()
 
     # Get API key
-    api_key = args.api_key or os.environ.get('NULLPLATFORM_API_KEY')
+    api_key = args.api_key or os.environ.get(ENV_NULLPLATFORM_API_KEY)
     if not api_key and not args.dry_run:
         print("Error: API key required. Provide via --api-key or NULLPLATFORM_API_KEY env var")
         sys.exit(1)
@@ -1302,8 +1175,8 @@ Environment Variables:
     setup.print_summary(results)
 
     # Exit with error code if any errors occurred
-    errors = sum(1 for r in results if r.status == 'error')
-    sys.exit(1 if errors > 0 else 0)
+    errors = sum(1 for r in results if r.status == STATUS_ERROR)
+    sys.exit(EXIT_ERROR if errors > 0 else EXIT_SUCCESS)
 
 
 if __name__ == '__main__':
