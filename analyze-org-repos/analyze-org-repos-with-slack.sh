@@ -1457,14 +1457,34 @@ for REPO in $REPOS; do
         fi
 
         # Track technology + adoption combination
+        echo "     🔍 DEBUG: PROJECT_TYPE='$PROJECT_TYPE' | csv_adoption='$csv_adoption' | csv_tech='$csv_tech'"
         if [[ -n "$PROJECT_TYPE" && -n "$csv_adoption" ]]; then
           local key="${PROJECT_TYPE}:${csv_adoption}"
+          local old_count=${TECH_ADOPTION_COUNTERS[$key]:-0}
           TECH_ADOPTION_COUNTERS[$key]=$((${TECH_ADOPTION_COUNTERS[$key]:-0} + 1))
           TECH_IN_CSV_COUNT[$PROJECT_TYPE]=$((${TECH_IN_CSV_COUNT[$PROJECT_TYPE]:-0} + 1))
+          echo "     ✓ Contador incrementado: $key ($old_count → ${TECH_ADOPTION_COUNTERS[$key]})"
 
           # Track repo URL for this tech+adoption combination
-          TECH_ADOPTION_REPOS[$key]+="$REPO_URL "
-          echo "     ✓ URL agregada para clave: $key (total: ${TECH_ADOPTION_COUNTERS[$key]} repos)"
+          if [[ -z "$REPO_URL" ]]; then
+            echo "     ❌ ERROR: REPO_URL está vacío! No se puede agregar URL" >&2
+          else
+            local old_urls="${TECH_ADOPTION_REPOS[$key]:-}"
+            local old_url_count=0
+            if [[ -n "$old_urls" ]]; then
+              old_url_count=$(echo "$old_urls" | wc -w)
+            fi
+            TECH_ADOPTION_REPOS[$key]+="$REPO_URL "
+            local new_url_count=$(echo "${TECH_ADOPTION_REPOS[$key]}" | wc -w)
+            echo "     ✓ URL agregada para clave: $key"
+            echo "       → Repo: $REPO"
+            echo "       → URL: $REPO_URL"
+            echo "       → Lista URLs: $old_url_count → $new_url_count URLs"
+          fi
+        else
+          echo "     ⚠️  Condición falló para agregar a tech counters:"
+          echo "       → PROJECT_TYPE='${PROJECT_TYPE:-VACÍO}'"
+          echo "       → csv_adoption='${csv_adoption:-VACÍO}'"
         fi
       else
         echo "     ⚠️  Ya contado (evitando duplicado)"
