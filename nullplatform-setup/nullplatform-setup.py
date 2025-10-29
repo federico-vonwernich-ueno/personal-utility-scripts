@@ -1107,9 +1107,11 @@ def send_setup_summary_notification(
         message_parts.append(f"• Duration: {minutes}m {seconds}s")
 
     # Add created resources with IDs
+    created_resources_str = ""
     if created > 0:
         created_output = _format_created_resources(results)
         if created_output:
+            created_resources_str = created_output
             message_parts.append("\n*Created Resources:*")
             # Convert to Slack format (already has proper structure)
             for line in created_output.split('\n'):
@@ -1159,7 +1161,8 @@ def send_setup_summary_notification(
             "EXISTS": str(exists),
             "ERRORS": str(errors),
             "DURATION": f"{int(duration_seconds // 60)}m {int(duration_seconds % 60)}s" if duration_seconds else "N/A",
-            "ERROR_LIST": error_list_str if error_list_str else "None"
+            "ERROR_LIST": error_list_str if error_list_str else "None",
+            "CREATED_RESOURCES": created_resources_str if created_resources_str else "None"
         },
         thread_ts=thread_ts
     )

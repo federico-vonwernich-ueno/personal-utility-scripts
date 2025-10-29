@@ -64,6 +64,13 @@
       }
     },
     {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*Created Resources:*\n{{CREATED_RESOURCES}}"
+      }
+    },
+    {
       "type": "context",
       "elements": [
         {
