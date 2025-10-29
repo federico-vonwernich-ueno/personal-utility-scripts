@@ -933,6 +933,7 @@ calculate_tech_adoption_distribution() {
     output+="${tech_display} ($tech_count repos in CSV):\n"
 
     # Find all adoption states for this tech
+    unset adoption_states
     typeset -A adoption_states
     for key in "${(@k)TECH_ADOPTION_COUNTERS}"; do
       if [[ "$key" == "$tech:"* ]]; then
@@ -1026,6 +1027,7 @@ generate_per_tech_adoption_reports() {
 EOF
 
     # Find all adoption states for this tech and generate report
+    unset adoption_states
     typeset -A adoption_states
     local total_counted=0
     for key in "${(@k)TECH_ADOPTION_COUNTERS}"; do
