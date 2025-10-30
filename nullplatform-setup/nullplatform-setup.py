@@ -269,6 +269,53 @@ class NullplatformSetup:
 
         return logger
 
+    def _scrub_sensitive_data(self, cmd: List[str], json_body: Optional[Dict] = None) -> Tuple[str, str]:
+        """
+        Scrub sensitive data (API keys, secrets) from command and JSON body for safe logging.
+
+        Args:
+            cmd: Command list that may contain --api-key
+            json_body: Optional JSON body that may contain sensitive values
+
+        Returns:
+            Tuple of (safe_cmd_string, safe_body_string)
+        """
+        # Scrub command - redact API key value
+        safe_cmd = []
+        skip_next = False
+        for part in cmd:
+            if skip_next:
+                safe_cmd.append('[REDACTED]')
+                skip_next = False
+            elif part == '--api-key':
+                safe_cmd.append(part)
+                skip_next = True
+            else:
+                safe_cmd.append(part)
+
+        safe_cmd_str = ' '.join(safe_cmd)
+
+        # Scrub JSON body
+        safe_body_str = ""
+        if json_body:
+            # Deep copy to avoid modifying original
+            import copy
+            scrubbed_body = copy.deepcopy(json_body)
+
+            # Scrub known sensitive fields at top level
+            sensitive_fields = ['api_key', 'apiKey', 'token', 'password', 'credential']
+            for field in sensitive_fields:
+                if field in scrubbed_body:
+                    scrubbed_body[field] = '[REDACTED]'
+
+            # Scrub parameter values if marked as secret
+            if scrubbed_body.get('secret') is True and 'value' in scrubbed_body:
+                scrubbed_body['value'] = '[REDACTED]'
+
+            safe_body_str = json.dumps(scrubbed_body, indent=2)
+
+        return safe_cmd_str, safe_body_str
+
     def _run_np_command(self, command: List[str], json_body: Optional[Dict] = None,
                         account_id: Optional[str] = None) -> Tuple[int, str, str]:
         """
@@ -301,14 +348,17 @@ class NullplatformSetup:
 
             cmd.extend(['--body', temp_file])
 
-        self.logger.debug(f"Running: {' '.join(cmd)}")
+        # Scrub sensitive data (API keys, secrets) before logging
+        safe_cmd_str, safe_body_str = self._scrub_sensitive_data(cmd, json_body)
+
+        self.logger.debug(f"Running: {safe_cmd_str}")
         if json_body:
-            self.logger.debug(f"Body: {json.dumps(json_body, indent=2)}")
+            self.logger.debug(f"Body: {safe_body_str}")
 
         if self.dry_run:
-            self.logger.info(f"[DRY RUN] Would execute: {' '.join(cmd)}")
+            self.logger.info(f"[DRY RUN] Would execute: {safe_cmd_str}")
             if json_body:
-                self.logger.info(f"[DRY RUN] With body: {json.dumps(json_body, indent=2)}")
+                self.logger.info(f"[DRY RUN] With body: {safe_body_str}")
             return 0, '{"id": "dry-run-id"}', ''
 
         result = subprocess.run(
