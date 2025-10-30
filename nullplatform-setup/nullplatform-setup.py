@@ -929,7 +929,7 @@ class NullplatformSetup:
         self.logger.info(f"Assigning dimensions to scope: {scope_name} ({dimensions})")
 
         returncode, stdout, stderr = self._run_np_command(
-            ['scope', 'dimension', 'create', '--scope-id', str(scope_id)],
+            ['scope', 'dimension', 'create', '--scopeId', str(scope_id)],
             json_body=dimensions
         )
 
