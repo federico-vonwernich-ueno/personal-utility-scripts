@@ -163,6 +163,85 @@ parameters:
 
 See `nullplatform-setup.example.yaml` for more examples.
 
+### Multiple Values Per Parameter
+
+A single parameter can have **multiple values** targeting different scopes or dimensions. This allows you to define a parameter once and provide different values for different environments, regions, or dimension combinations.
+
+**Two Syntax Options:**
+
+1. **Single Value** (simple case):
+```yaml
+parameters:
+  - name: "DATABASE_URL"
+    value: "postgres://localhost:5432/mydb"
+```
+
+2. **Multiple Values** (advanced case):
+```yaml
+parameters:
+  - name: "LOG_LEVEL"
+    type: "environment"
+    values:
+      - value: "debug"
+        scope: "development"
+
+      - value: "info"
+        scope: "staging"
+
+      - value: "warn"
+        scope: "production"
+```
+
+**Key Features:**
+
+- **Define once, target many**: Single parameter definition with multiple values
+- **Scope targeting**: Each value can target a specific scope
+- **Dimension targeting**: Each value can target dimension combinations
+- **Application-level fallback**: Values without scope/dimensions apply to entire application
+- **Precedence order**: Scope-specific > Dimension-specific > Application-level
+
+**Scope-Specific Values:**
+```yaml
+parameters:
+  - name: "LOG_LEVEL"
+    values:
+      - value: "debug"
+        scope: "development"
+      - value: "info"
+        scope: "production"
+      - value: "info"  # Fallback for any scope not explicitly configured
+```
+
+**Dimension-Based Values:**
+```yaml
+parameters:
+  - name: "MAX_CONNECTIONS"
+    values:
+      - value: "100"
+        dimensions:
+          environment: "development"
+          region: "us-east-1"
+
+      - value: "500"
+        dimensions:
+          environment: "production"
+          region: "us-east-1"
+
+      - value: "500"
+        dimensions:
+          environment: "production"
+          region: "eu-west-1"
+```
+
+**Important Notes:**
+
+- Cannot combine `scope` and `dimensions` in the same value
+- Dimensions require application-level parameters (no scope targeting)
+- Each value in the `values` array is created independently
+- Use single `value` field for simple cases, `values` array for complex scenarios
+
+See `nullplatform-setup.example.yaml` for comprehensive examples.
+
 ## Usage
 
 ### Set API Key

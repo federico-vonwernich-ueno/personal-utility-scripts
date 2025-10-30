@@ -711,14 +711,20 @@ class NullplatformSetup:
         return self._handle_api_response(RESOURCE_APPLICATION, name, returncode, stdout, stderr, nrn=nrn)
 
     def create_parameter(self, param_config: Dict) -> SetupResult:
-        """Create a parameter and optionally set its value"""
+        """
+        Create a parameter and optionally set its value(s).
+
+        Supports two modes:
+        1. Single value: param_config contains 'value' field
+        2. Multiple values: param_config contains 'values' array, each with its own scope/dimensions
+        """
         name = param_config.get('name')
 
         self.logger.info(f"Creating parameter: {name}")
 
         # Build the parameter definition with required API fields
         # Remove fields that are not part of the API schema
-        param_def = {k: v for k, v in param_config.items() if k not in ['value', 'scope', 'application_id', 'namespace_id']}
+        param_def = {k: v for k, v in param_config.items() if k not in ['value', 'values', 'scope', 'application_id', 'namespace_id', 'scope_id']}
 
         # Build NRN from application_id and namespace_id
         param_nrn = None
@@ -781,10 +787,55 @@ class NullplatformSetup:
         # Handle creation success/failure
         result = self._handle_api_response(RESOURCE_PARAMETER, name, returncode, stdout, stderr, nrn=param_nrn)
 
-        # If parameter created successfully and value provided, set the value
-        if result.status == STATUS_CREATED and 'value' in param_config:
-            success, message = self._create_parameter_value(name, result.resource_id, param_config)
-            result.message = message
+        # If parameter created successfully, set value(s)
+        if result.status == STATUS_CREATED:
+            if 'values' in param_config:
+                # Multiple values: loop through and create each one
+                values_list = param_config['values']
+                if not isinstance(values_list, list):
+                    self.logger.error(f"Parameter '{name}' has 'values' field but it's not a list")
+                    result.message = "Invalid 'values' field: must be a list"
+                    result.status = STATUS_ERROR
+                    return result
+
+                self.logger.info(f"Creating {len(values_list)} value(s) for parameter: {name}")
+                success_count = 0
+                messages = []
+
+                for i, value_config in enumerate(values_list):
+                    # Build context for this value
+                    value_context = {
+                        'value': value_config.get('value'),
+                        'application_id': param_config.get('application_id'),
+                        'namespace_id': param_config.get('namespace_id')
+                    }
+
+                    # Add scope if specified
+                    if 'scope' in value_config:
+                        scope_name = value_config['scope']
+                        scope_id = self.resource_ids['scopes'].get(scope_name)
+                        if scope_id:
+                            value_context['scope_id'] = scope_id
+                        else:
+                            self.logger.warning(f"Scope '{scope_name}' not found for parameter value #{i+1}")
+
+                    # Add dimensions if specified
+                    if 'dimensions' in value_config:
+                        value_context['dimensions'] = value_config['dimensions']
+
+                    # Create the value
+                    success, message = self._create_parameter_value(name, result.resource_id, value_context)
+                    messages.append(f"Value #{i+1}: {message}")
+                    if success:
+                        success_count += 1
+
+                # Update result message
+                result.message = f"Parameter created with {success_count}/{len(values_list)} values set. " + "; ".join(messages)
+
+            elif 'value' in param_config:
+                # Single value: use existing logic
+                success, message = self._create_parameter_value(name, result.resource_id, param_config)
+                result.message = message
 
         return result
 

@@ -57,3 +57,41 @@ applications:
         dimensions:
           environment: "development"
           region: "us-east-1"
+
+      # Parameter with multiple values (one parameter, many values)
+      # Each value can target different scopes, dimensions, or application-level
+      - name: "LOG_LEVEL"
+        type: "environment"
+        values:
+          # Scope-specific values
+          - value: "debug"
+            scope: "development"
+
+          - value: "info"
+            scope: "staging"
+
+          - value: "warn"
+            scope: "production"
+
+          # Application-level fallback (no scope or dimensions)
+          - value: "info"
+
+      # Advanced: Multiple values with dimensions
+      - name: "MAX_CONNECTIONS"
+        type: "environment"
+        values:
+          # Different values for different dimension combinations
+          - value: "100"
+            dimensions:
+              environment: "development"
+              region: "us-east-1"
+
+          - value: "500"
+            dimensions:
+              environment: "production"
+              region: "us-east-1"
+
+          - value: "500"
+            dimensions:
+              environment: "production"
+              region: "eu-west-1"
