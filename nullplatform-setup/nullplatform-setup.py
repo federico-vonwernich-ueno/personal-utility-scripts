@@ -555,7 +555,7 @@ class NullplatformSetup:
         Args:
             param_name: Name of the parameter
             param_id: ID of the parameter
-            param_config: Parameter configuration dict
+            param_config: Parameter configuration dict (must include 'value', optionally 'dimensions')
 
         Returns:
             Tuple of (success: bool, message: str)
@@ -563,6 +563,19 @@ class NullplatformSetup:
         value_config = {
             'value': param_config['value']
         }
+
+        # Add dimensions if present
+        if 'dimensions' in param_config:
+            value_config['dimensions'] = param_config['dimensions']
+            self.logger.debug(f"Setting parameter value with dimensions: {param_config['dimensions']}")
+
+            # Validate: Dimensions require application-level NRN
+            if 'scope_id' in param_config:
+                self.logger.warning(
+                    f"Parameter '{param_name}' has dimensions but uses scope-level NRN. "
+                    f"Nullplatform API requires application-level NRN for dimensions. "
+                    f"This may fail."
+                )
 
         # Build NRN for the parameter value
         if 'scope_id' in param_config:

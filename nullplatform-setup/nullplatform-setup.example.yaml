@@ -49,3 +49,11 @@ applications:
         destination_path: "/app/config.json"
         encoding: "base64"
         value: "eyJrZXkiOiJ2YWx1ZSJ9"
+
+      # Parameter with dimensions (multi-environment, multi-region)
+      # Note: Dimensions require application-level parameters (no 'scope' field)
+      - name: "API_ENDPOINT"
+        value: "https://api.dev.us-east-1.example.com"
+        dimensions:
+          environment: "development"
+          region: "us-east-1"

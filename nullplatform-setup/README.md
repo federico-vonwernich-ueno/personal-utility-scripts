@@ -130,6 +130,39 @@ The `repository_url` field (required) associates your application with a Git rep
 
 Parameters can be application-level (applies to all scopes) or scope-specific (different values per environment). Use the `scope` field to target specific scopes. See `nullplatform-setup.example.yaml` for detailed examples of parameter types, encoding options, and scope targeting.
 
+### Parameter Dimensions
+
+Parameters support **dimensions** for advanced multi-dimensional configurations. Dimensions allow you to have different parameter values based on custom criteria like environment, region, datacenter, etc.
+
+**Key Features:**
+- Define custom dimension keys (e.g., `environment`, `region`, `country`)
+- Set different values for each dimension combination
+- **Requirement:** Dimensions must use application-level parameters (cannot combine with `scope` field)
+
+**Example use cases:**
+- Multi-region deployments with region-specific endpoints
+- Environment-specific configurations (dev, staging, production)
+- Country-specific settings for compliance or localization
+- Custom dimension combinations for complex deployment strategies
+
+**Configuration:**
+```yaml
+parameters:
+  - name: "API_ENDPOINT"
+    value: "https://api.dev.us-east-1.example.com"
+    dimensions:
+      environment: "development"
+      region: "us-east-1"
+
+  - name: "API_ENDPOINT"
+    value: "https://api.prod.eu-west-1.example.com"
+    dimensions:
+      environment: "production"
+      region: "eu-west-1"
+```
+
+See `nullplatform-setup.example.yaml` for more examples.
+
 ## Usage
 
 ### Set API Key
