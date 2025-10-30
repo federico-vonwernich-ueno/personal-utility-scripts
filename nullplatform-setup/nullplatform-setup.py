@@ -65,7 +65,7 @@ VALID_SCOPE_REQUEST_FIELDS = [
 
 # Valid scope update fields (per Nullplatform API schema)
 # These fields can be set via PATCH /scope/:id after creation
-# Note: dimensions CANNOT be set during creation, only via update
+# Note: dimensions has its own dedicated API (POST /scope/:id/dimension) and is NOT set via PATCH
 VALID_SCOPE_UPDATE_FIELDS = [
     'status',
     'requested_spec',
@@ -75,8 +75,8 @@ VALID_SCOPE_UPDATE_FIELDS = [
     'messages',
     'instance_id',
     'domain',
-    'name',
-    'dimensions'  # Can only be set via PATCH, not during POST creation
+    'name'
+    # 'dimensions' is NOT included - it uses a separate API: POST /scope/:id/dimension
 ]
 
 # Environment variables
@@ -911,55 +911,54 @@ class NullplatformSetup:
         # Handle API response (success or other errors)
         result = self._handle_api_response(RESOURCE_SCOPE, name, returncode, stdout, stderr, nrn=nrn)
 
-        # Step 2: If creation succeeded and there are update-only fields, PATCH them
+        # Step 2: If creation succeeded and there are dimensions, assign them
         if result.status == STATUS_CREATED and scope_id:
-            # Identify fields that can only be set via PATCH (not in POST request fields)
-            update_only_fields = {
-                k: v for k, v in scope_config.items()
-                if k in VALID_SCOPE_UPDATE_FIELDS and k not in VALID_SCOPE_REQUEST_FIELDS
-            }
+            if 'dimensions' in scope_config:
+                dimensions = scope_config['dimensions']
+                self.logger.debug(f"Scope '{name}' has dimensions to assign: {dimensions}")
+                dim_result = self.assign_scope_dimensions(scope_id, name, dimensions)
 
-            if update_only_fields:
-                self.logger.debug(f"Scope '{name}' has update-only fields: {', '.join(update_only_fields.keys())}")
-                update_result = self.update_scope(scope_id, name, update_only_fields)
-
-                # If update failed, log warning but don't fail overall (scope was created)
-                if update_result.status == STATUS_ERROR:
-                    self.logger.warning(f"Scope '{name}' created but update failed: {update_result.message}")
-                    result.message += f" (Warning: Post-creation update failed: {update_result.message})"
+                # If dimension assignment failed, log warning but don't fail overall (scope was created)
+                if dim_result.status == STATUS_ERROR:
+                    self.logger.warning(f"Scope '{name}' created but dimension assignment failed: {dim_result.message}")
+                    result.message += f" (Warning: Dimension assignment failed: {dim_result.message})"
 
         return result
 
-    def update_scope(self, scope_id: str, scope_name: str, update_fields: Dict) -> SetupResult:
+    def assign_scope_dimensions(self, scope_id: str, scope_name: str, dimensions: Dict) -> SetupResult:
         """
-        Update a scope via PATCH.
-        Used to set fields that cannot be set during creation (e.g., dimensions).
+        Assign dimensions to a scope using the dedicated dimension API.
+        Uses POST /scope/:scopeId/dimension endpoint.
+
+        Dimensions cannot be set via PATCH - they require a separate API call.
         """
-        self.logger.info(f"Updating scope: {scope_name} (fields: {', '.join(update_fields.keys())})")
+        self.logger.info(f"Assigning dimensions to scope: {scope_name} ({dimensions})")
 
         returncode, stdout, stderr = self._run_np_command(
-            ['scope', 'patch', '--id', str(scope_id)],
-            json_body=update_fields
+            ['scope', 'dimension', 'create', '--scope-id', str(scope_id)],
+            json_body=dimensions
         )
 
-        # Check for success
+        # Check for success (dimension API returns 204 No Content on success)
         if returncode == 0:
-            self.logger.info(f"✓ Updated scope: {scope_name}")
+            self.logger.info(f"✓ Assigned dimensions to scope: {scope_name}")
             return SetupResult(
                 resource_type=RESOURCE_SCOPE,
                 resource_name=scope_name,
                 status=STATUS_CREATED,  # Use CREATED status since this is part of creation flow
-                message=f'Scope updated successfully',
+                message=f'Scope dimensions assigned successfully',
                 resource_id=scope_id
             )
         else:
-            self.logger.error(f"Failed to update scope: {scope_name}")
+            self.logger.error(f"Failed to assign dimensions to scope: {scope_name}")
             self.logger.error(f"Error: {stderr}")
+            if stdout:
+                self.logger.error(f"API response: {stdout}")
             return SetupResult(
                 resource_type=RESOURCE_SCOPE,
                 resource_name=scope_name,
                 status=STATUS_ERROR,
-                message=f'Failed to update scope: {stderr}',
+                message=f'Failed to assign dimensions: {stderr}',
                 resource_id=scope_id
             )
 
