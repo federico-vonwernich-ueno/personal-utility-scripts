@@ -52,6 +52,7 @@ PARAM_ENCODING_BASE64 = 'base64'
 
 # Valid scope request fields (per Nullplatform API schema)
 # These are the ONLY fields that can be sent in the scope creation (POST) request
+# Note: dimensions is not in the documented POST schema, but testing if API accepts it anyway
 VALID_SCOPE_REQUEST_FIELDS = [
     'name',
     'type',
@@ -60,7 +61,8 @@ VALID_SCOPE_REQUEST_FIELDS = [
     'requested_spec',
     'capabilities',
     'messages',
-    'external_created'
+    'external_created',
+    'dimensions'  # Testing: not documented but might work in practice
 ]
 
 # Valid scope update fields (per Nullplatform API schema)
@@ -875,7 +877,8 @@ class NullplatformSetup:
         self.logger.info(f"Creating scope: {name}")
 
         # Filter to only valid API request fields
-        # Fields like 'namespace_id', 'dimensions', 'visibility' are not part of the creation request
+        # Fields like 'namespace_id', 'visibility' are config fields, not API request fields
+        # Testing: dimensions is included even though not in documented POST schema
         scope_def = {k: v for k, v in scope_config.items() if k in VALID_SCOPE_REQUEST_FIELDS}
 
         # Log filtered fields for debugging
@@ -911,17 +914,8 @@ class NullplatformSetup:
         # Handle API response (success or other errors)
         result = self._handle_api_response(RESOURCE_SCOPE, name, returncode, stdout, stderr, nrn=nrn)
 
-        # Step 2: If creation succeeded and there are dimensions, assign them
-        if result.status == STATUS_CREATED and scope_id:
-            if 'dimensions' in scope_config:
-                dimensions = scope_config['dimensions']
-                self.logger.debug(f"Scope '{name}' has dimensions to assign: {dimensions}")
-                dim_result = self.assign_scope_dimensions(scope_id, name, dimensions)
-
-                # If dimension assignment failed, log warning but don't fail overall (scope was created)
-                if dim_result.status == STATUS_ERROR:
-                    self.logger.warning(f"Scope '{name}' created but dimension assignment failed: {dim_result.message}")
-                    result.message += f" (Warning: Dimension assignment failed: {dim_result.message})"
+        # Note: dimensions are now included in the creation request body (VALID_SCOPE_REQUEST_FIELDS)
+        # If that doesn't work, we have assign_scope_dimensions() method available as fallback
 
         return result
 
