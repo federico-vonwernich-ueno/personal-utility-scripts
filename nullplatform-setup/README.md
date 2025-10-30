@@ -126,6 +126,85 @@ applications:
 
 The `repository_url` field (required) associates your application with a Git repository, enabling automatic CI/CD integration, source code tracking, and repository-based deployments. The repository must already exist in your Git provider.
 
+### Scope Configuration
+
+Scopes define deployment environments (development, staging, production) with their own resource allocations and capabilities. The script uses a **template-based approach** with reasonable defaults that you can override.
+
+**Minimal Configuration** (uses all defaults):
+```yaml
+scopes:
+  - name: "development"
+  - name: "production"
+```
+
+**Custom Configuration** (override specific fields):
+```yaml
+scopes:
+  - name: "production"
+    type: "web_pool"
+    dimensions:
+      environment: "prod"
+      region: "sae-1"
+
+    # Resource specifications
+    requested_spec:
+      cpu_profile: "standard"          # CPU profile type
+      memory_in_gb: 4                  # Memory allocation
+      local_storage_in_gb: 50          # Storage allocation
+
+    # Capabilities (override defaults as needed)
+    capabilities:
+      continuous_delivery:
+        enabled: true
+
+      auto_scaling:
+        enabled: true
+        cpu:
+          min_percentage: 30
+          max_percentage: 70
+        instances:
+          min_amount: 2
+          max_amount: 10
+
+      health_check:
+        type: "http"
+        path: "/health"
+        configuration:
+          timeout: 5
+          interval: 10
+```
+
+**Key Features:**
+- **Template-based defaults**: All scopes get reasonable default capabilities automatically
+- **Selective overrides**: Only specify what you want to change from defaults
+- **Deep merging**: Your custom capabilities merge with defaults (not replace)
+- **Validation**: Configuration is validated before sending to API
+
+**Available Capabilities:**
+- `continuous_delivery`: Enable/disable CI/CD integration
+- `logs`: Logging configuration (provider, throttling)
+- `metrics`: Metrics providers (CloudWatch, Prometheus, etc.)
+- `spot_instances`: Cost optimization with spot instances
+- `auto_scaling`: CPU and instance-based auto-scaling
+- `memory`: Memory allocation
+- `storage`: Storage allocation
+- `processor`: Processor type and configuration
+- `visibility`: Network reachability settings
+- `health_check`: Health check endpoint and configuration
+- `scheduled_stop`: Automatic scope shutdown for cost savings
+
+**Default Values:**
+The script provides sensible defaults for all capabilities:
+- `continuous_delivery.enabled`: false
+- `logs.provider`: "none"
+- `auto_scaling.enabled`: false
+- `memory.memory_in_gb`: 1
+- `storage.storage_in_gb`: 8
+- `health_check.path`: "/health"
+- And more (see `DEFAULT_SCOPE_CAPABILITIES` in script)
+
+See `nullplatform-setup.example.yaml` for comprehensive examples showing minimal, basic, and advanced scope configurations.
+
 ### Scope-Specific Parameters
 
 Parameters can be application-level (applies to all scopes) or scope-specific (different values per environment). Use the `scope` field to target specific scopes. See `nullplatform-setup.example.yaml` for detailed examples of parameter types, encoding options, and scope targeting.

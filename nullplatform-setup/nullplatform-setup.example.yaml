@@ -14,12 +14,14 @@ account_id: "your-account-id-here"
 # Applications
 # Each application can contain nested scopes and parameters
 applications:
-  # Example 1: Basic application
+  # Example 1: Basic application with minimal scope config
+  # Scopes will use default capabilities and requested_spec
   - name: "my-web-app"
     namespace: "my-namespace"  # Must exist - create with: np namespace create
     repository_url: "https://github.com/my-org/my-web-app"  # Required
 
     scopes:
+      # Minimal: just provide name, all other fields use defaults
       - name: "development"
       - name: "staging"
       - name: "production"
@@ -95,3 +97,100 @@ applications:
             dimensions:
               environment: "production"
               region: "eu-west-1"
+
+  # Example 3: Advanced scope configuration with custom capabilities
+  - name: "my-production-service"
+    namespace: "my-namespace"
+    repository_url: "https://github.com/my-org/my-production-service"
+
+    scopes:
+      # Development scope: minimal resources, use mostly defaults
+      - name: "development"
+        type: "web_pool"
+        dimensions:
+          environment: "dev"
+          region: "sae-1"
+        # Optional: override specific capabilities (others use defaults)
+        capabilities:
+          auto_scaling:
+            enabled: false  # Disable auto-scaling in dev
+          memory:
+            memory_in_gb: 0.5  # Lower memory for dev
+
+      # Production scope: full configuration with custom capabilities
+      - name: "production"
+        type: "web_pool"
+        dimensions:
+          environment: "prod"
+          region: "sae-1"
+
+        # Custom requested_spec (override defaults)
+        requested_spec:
+          cpu_profile: "high_performance"
+          memory_in_gb: 4
+          local_storage_in_gb: 50
+
+        # Custom capabilities (merged with defaults)
+        # Only specify what you want to override
+        capabilities:
+          # Enable continuous delivery
+          continuous_delivery:
+            enabled: true
+
+          # Configure logging
+          logs:
+            provider: "cloudwatch"
+            throttling:
+              enabled: true
+              value: 10000
+              unit: "line_seconds"
+
+          # Configure metrics
+          metrics:
+            custom_metrics_provider: "prometheus"
+            performance_metrics_provider: "cloudwatch_metrics"
+
+          # Enable spot instances for cost savings
+          spot_instances:
+            enabled: true
+            target_percentage: 70
+
+          # Configure auto-scaling
+          auto_scaling:
+            enabled: true
+            cpu:
+              min_percentage: 30
+              max_percentage: 70
+            instances:
+              min_amount: 2
+              max_amount: 20
+              amount: 2
+
+          # Memory and storage
+          memory:
+            memory_in_gb: 4
+
+          storage:
+            storage_in_gb: 50
+
+          # Processor configuration
+          processor:
+            type: "cpu"
+            instance: ""
+
+          # Visibility
+          visibility:
+            reachability: "public"
+
+          # Health check configuration
+          health_check:
+            type: "http"
+            path: "/health"
+            configuration:
+              timeout: 5
+              interval: 10
+
+          # Scheduled stop (for cost optimization)
+          scheduled_stop:
+            enabled: false
+            timer: "3600"

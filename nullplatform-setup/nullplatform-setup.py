@@ -81,6 +81,75 @@ VALID_SCOPE_UPDATE_FIELDS = [
     # 'dimensions' is NOT included - it uses a separate API: POST /scope/:id/dimension
 ]
 
+# Default scope capabilities template
+# These are reasonable defaults based on Nullplatform's scope creation schema
+# Users can override any of these in their YAML config
+DEFAULT_SCOPE_CAPABILITIES = {
+    "continuous_delivery": {
+        "enabled": False
+    },
+    "logs": {
+        "throttling": {
+            "unit": "line_seconds",
+            "value": 1000,
+            "enabled": False
+        },
+        "provider": "none"
+    },
+    "metrics": {
+        "custom_metrics_provider": "cloudwatch_metrics",
+        "performance_metrics_provider": "cloudwatch_metrics"
+    },
+    "spot_instances": {
+        "target_percentage": 80,
+        "enabled": False
+    },
+    "auto_scaling": {
+        "cpu": {
+            "max_percentage": 50,
+            "min_percentage": 25
+        },
+        "instances": {
+            "max_amount": 10,
+            "min_amount": 2,
+            "amount": 1
+        },
+        "enabled": False
+    },
+    "memory": {
+        "memory_in_gb": 1
+    },
+    "storage": {
+        "storage_in_gb": 8
+    },
+    "processor": {
+        "instance": "",
+        "type": "cpu"
+    },
+    "visibility": {
+        "reachability": "account"
+    },
+    "health_check": {
+        "type": "http",
+        "path": "/health",
+        "configuration": {
+            "timeout": 2,
+            "interval": 5
+        }
+    },
+    "scheduled_stop": {
+        "timer": "3600",
+        "enabled": False
+    }
+}
+
+# Default requested_spec template
+DEFAULT_REQUESTED_SPEC = {
+    "cpu_profile": "standard",
+    "memory_in_gb": 1,
+    "local_storage_in_gb": 8
+}
+
 # Environment variables
 ENV_NULLPLATFORM_API_KEY = 'NULLPLATFORM_API_KEY'
 ENV_SLACK_DRY_RUN = 'SLACK_DRY_RUN'
@@ -870,21 +939,230 @@ class NullplatformSetup:
 
         return result
 
+    def _deep_merge_dict(self, base: Dict, override: Dict) -> Dict:
+        """
+        Deep merge two dictionaries, with override values taking precedence.
+        Returns a new dictionary (doesn't modify originals).
+        """
+        import copy
+        result = copy.deepcopy(base)
+
+        for key, value in override.items():
+            if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+                # Recursively merge nested dicts
+                result[key] = self._deep_merge_dict(result[key], value)
+            else:
+                # Override value
+                result[key] = copy.deepcopy(value)
+
+        return result
+
+    def _validate_scope_capabilities(self, capabilities: Dict, scope_name: str) -> Tuple[bool, Optional[str]]:
+        """
+        Validate scope capabilities structure.
+
+        Returns:
+            Tuple of (is_valid, error_message)
+        """
+        if not isinstance(capabilities, dict):
+            return False, f"Scope '{scope_name}': capabilities must be an object/dict"
+
+        # Validate continuous_delivery
+        if 'continuous_delivery' in capabilities:
+            cd = capabilities['continuous_delivery']
+            if not isinstance(cd, dict):
+                return False, f"Scope '{scope_name}': capabilities.continuous_delivery must be an object"
+            if 'enabled' in cd and not isinstance(cd['enabled'], bool):
+                return False, f"Scope '{scope_name}': capabilities.continuous_delivery.enabled must be boolean"
+
+        # Validate logs
+        if 'logs' in capabilities:
+            logs = capabilities['logs']
+            if not isinstance(logs, dict):
+                return False, f"Scope '{scope_name}': capabilities.logs must be an object"
+            if 'provider' in logs and not isinstance(logs['provider'], str):
+                return False, f"Scope '{scope_name}': capabilities.logs.provider must be string"
+            if 'throttling' in logs:
+                throttling = logs['throttling']
+                if not isinstance(throttling, dict):
+                    return False, f"Scope '{scope_name}': capabilities.logs.throttling must be an object"
+                if 'enabled' in throttling and not isinstance(throttling['enabled'], bool):
+                    return False, f"Scope '{scope_name}': capabilities.logs.throttling.enabled must be boolean"
+                if 'value' in throttling and not isinstance(throttling['value'], (int, float)):
+                    return False, f"Scope '{scope_name}': capabilities.logs.throttling.value must be number"
+
+        # Validate metrics
+        if 'metrics' in capabilities:
+            metrics = capabilities['metrics']
+            if not isinstance(metrics, dict):
+                return False, f"Scope '{scope_name}': capabilities.metrics must be an object"
+
+        # Validate spot_instances
+        if 'spot_instances' in capabilities:
+            spot = capabilities['spot_instances']
+            if not isinstance(spot, dict):
+                return False, f"Scope '{scope_name}': capabilities.spot_instances must be an object"
+            if 'enabled' in spot and not isinstance(spot['enabled'], bool):
+                return False, f"Scope '{scope_name}': capabilities.spot_instances.enabled must be boolean"
+            if 'target_percentage' in spot and not isinstance(spot['target_percentage'], (int, float)):
+                return False, f"Scope '{scope_name}': capabilities.spot_instances.target_percentage must be number"
+
+        # Validate auto_scaling
+        if 'auto_scaling' in capabilities:
+            auto_scaling = capabilities['auto_scaling']
+            if not isinstance(auto_scaling, dict):
+                return False, f"Scope '{scope_name}': capabilities.auto_scaling must be an object"
+            if 'enabled' in auto_scaling and not isinstance(auto_scaling['enabled'], bool):
+                return False, f"Scope '{scope_name}': capabilities.auto_scaling.enabled must be boolean"
+            if 'cpu' in auto_scaling:
+                cpu = auto_scaling['cpu']
+                if not isinstance(cpu, dict):
+                    return False, f"Scope '{scope_name}': capabilities.auto_scaling.cpu must be an object"
+                for field in ['min_percentage', 'max_percentage']:
+                    if field in cpu and not isinstance(cpu[field], (int, float)):
+                        return False, f"Scope '{scope_name}': capabilities.auto_scaling.cpu.{field} must be number"
+            if 'instances' in auto_scaling:
+                instances = auto_scaling['instances']
+                if not isinstance(instances, dict):
+                    return False, f"Scope '{scope_name}': capabilities.auto_scaling.instances must be an object"
+                for field in ['min_amount', 'max_amount', 'amount']:
+                    if field in instances and not isinstance(instances[field], int):
+                        return False, f"Scope '{scope_name}': capabilities.auto_scaling.instances.{field} must be integer"
+
+        # Validate memory
+        if 'memory' in capabilities:
+            memory = capabilities['memory']
+            if not isinstance(memory, dict):
+                return False, f"Scope '{scope_name}': capabilities.memory must be an object"
+            if 'memory_in_gb' in memory and not isinstance(memory['memory_in_gb'], (int, float)):
+                return False, f"Scope '{scope_name}': capabilities.memory.memory_in_gb must be number"
+
+        # Validate storage
+        if 'storage' in capabilities:
+            storage = capabilities['storage']
+            if not isinstance(storage, dict):
+                return False, f"Scope '{scope_name}': capabilities.storage must be an object"
+            if 'storage_in_gb' in storage and not isinstance(storage['storage_in_gb'], (int, float)):
+                return False, f"Scope '{scope_name}': capabilities.storage.storage_in_gb must be number"
+
+        # Validate processor
+        if 'processor' in capabilities:
+            processor = capabilities['processor']
+            if not isinstance(processor, dict):
+                return False, f"Scope '{scope_name}': capabilities.processor must be an object"
+            if 'type' in processor and not isinstance(processor['type'], str):
+                return False, f"Scope '{scope_name}': capabilities.processor.type must be string"
+            if 'instance' in processor and not isinstance(processor['instance'], str):
+                return False, f"Scope '{scope_name}': capabilities.processor.instance must be string"
+
+        # Validate visibility
+        if 'visibility' in capabilities:
+            visibility = capabilities['visibility']
+            if not isinstance(visibility, dict):
+                return False, f"Scope '{scope_name}': capabilities.visibility must be an object"
+            if 'reachability' in visibility and not isinstance(visibility['reachability'], str):
+                return False, f"Scope '{scope_name}': capabilities.visibility.reachability must be string"
+
+        # Validate health_check
+        if 'health_check' in capabilities:
+            health_check = capabilities['health_check']
+            if not isinstance(health_check, dict):
+                return False, f"Scope '{scope_name}': capabilities.health_check must be an object"
+            if 'type' in health_check and not isinstance(health_check['type'], str):
+                return False, f"Scope '{scope_name}': capabilities.health_check.type must be string"
+            if 'path' in health_check and not isinstance(health_check['path'], str):
+                return False, f"Scope '{scope_name}': capabilities.health_check.path must be string"
+            if 'configuration' in health_check:
+                config = health_check['configuration']
+                if not isinstance(config, dict):
+                    return False, f"Scope '{scope_name}': capabilities.health_check.configuration must be an object"
+                for field in ['timeout', 'interval']:
+                    if field in config and not isinstance(config[field], (int, float)):
+                        return False, f"Scope '{scope_name}': capabilities.health_check.configuration.{field} must be number"
+
+        # Validate scheduled_stop
+        if 'scheduled_stop' in capabilities:
+            scheduled_stop = capabilities['scheduled_stop']
+            if not isinstance(scheduled_stop, dict):
+                return False, f"Scope '{scope_name}': capabilities.scheduled_stop must be an object"
+            if 'enabled' in scheduled_stop and not isinstance(scheduled_stop['enabled'], bool):
+                return False, f"Scope '{scope_name}': capabilities.scheduled_stop.enabled must be boolean"
+            if 'timer' in scheduled_stop and not isinstance(scheduled_stop['timer'], (str, int)):
+                return False, f"Scope '{scope_name}': capabilities.scheduled_stop.timer must be string or number"
+
+        return True, None
+
+    def _merge_scope_capabilities(self, user_capabilities: Optional[Dict]) -> Dict:
+        """
+        Merge user-provided capabilities with default template.
+        User values override defaults.
+
+        Returns:
+            Merged capabilities dict
+        """
+        if not user_capabilities:
+            self.logger.debug("No user capabilities provided, using defaults")
+            return DEFAULT_SCOPE_CAPABILITIES.copy()
+
+        merged = self._deep_merge_dict(DEFAULT_SCOPE_CAPABILITIES, user_capabilities)
+        self.logger.debug(f"Merged user capabilities with defaults")
+        return merged
+
     def create_scope(self, scope_config: Dict) -> SetupResult:
-        """Create a scope"""
+        """Create a scope with template-based capabilities and validation"""
         name = scope_config.get('name')
 
         self.logger.info(f"Creating scope: {name}")
 
+        # Make a working copy to avoid modifying original config
+        import copy
+        working_config = copy.deepcopy(scope_config)
+
+        # Merge capabilities with defaults (user values override defaults)
+        user_capabilities = working_config.get('capabilities')
+        merged_capabilities = self._merge_scope_capabilities(user_capabilities)
+        working_config['capabilities'] = merged_capabilities
+
+        # Validate capabilities structure
+        is_valid, error_msg = self._validate_scope_capabilities(merged_capabilities, name)
+        if not is_valid:
+            self.logger.error(f"Scope capabilities validation failed: {error_msg}")
+            return SetupResult(
+                resource_type=RESOURCE_SCOPE,
+                resource_name=name,
+                status=STATUS_ERROR,
+                message=f'Validation failed: {error_msg}'
+            )
+
+        # Handle requested_spec (merge with defaults if needed)
+        if 'requested_spec' in working_config:
+            user_spec = working_config['requested_spec']
+            if isinstance(user_spec, dict):
+                # User provided object structure - merge with defaults
+                merged_spec = self._deep_merge_dict(DEFAULT_REQUESTED_SPEC, user_spec)
+                working_config['requested_spec'] = merged_spec
+                self.logger.debug(f"Merged requested_spec with defaults: {merged_spec}")
+            else:
+                # User provided non-dict (maybe old string format?) - log warning
+                self.logger.warning(f"Scope '{name}': requested_spec should be an object with cpu_profile, memory_in_gb, local_storage_in_gb")
+        else:
+            # No requested_spec provided - use defaults
+            working_config['requested_spec'] = DEFAULT_REQUESTED_SPEC.copy()
+            self.logger.debug(f"Using default requested_spec for scope '{name}'")
+
         # Filter to only valid API request fields
         # Fields like 'namespace_id', 'visibility' are config fields, not API request fields
-        # Testing: dimensions is included even though not in documented POST schema
-        scope_def = {k: v for k, v in scope_config.items() if k in VALID_SCOPE_REQUEST_FIELDS}
+        scope_def = {k: v for k, v in working_config.items() if k in VALID_SCOPE_REQUEST_FIELDS}
 
         # Log filtered fields for debugging
-        filtered_fields = [k for k in scope_config.keys() if k not in VALID_SCOPE_REQUEST_FIELDS]
+        filtered_fields = [k for k in working_config.keys() if k not in VALID_SCOPE_REQUEST_FIELDS]
         if filtered_fields:
             self.logger.debug(f"Filtered out non-API fields for scope '{name}': {', '.join(filtered_fields)}")
+
+        # Log final scope definition in verbose mode
+        if self.logger.isEnabledFor(logging.DEBUG):
+            import json as json_module
+            self.logger.debug(f"Final scope definition for '{name}': {json_module.dumps(scope_def, indent=2)}")
 
         returncode, stdout, stderr = self._run_np_command(
             ['scope', 'create'],
