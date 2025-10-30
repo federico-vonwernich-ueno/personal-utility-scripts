@@ -938,8 +938,7 @@ class NullplatformSetup:
         self.logger.info(f"Updating scope: {scope_name} (fields: {', '.join(update_fields.keys())})")
 
         returncode, stdout, stderr = self._run_np_command(
-            ['scope', 'patch'],
-            command_args=['--id', scope_id],
+            ['scope', 'patch', '--id', scope_id],
             json_body=update_fields
         )
 
