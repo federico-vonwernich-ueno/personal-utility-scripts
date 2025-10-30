@@ -1333,6 +1333,14 @@ class NullplatformSetup:
             # 3. Create scopes for this application
             scopes = app_config.get('scopes', [])
             for scope_config in scopes:
+                # Skip None or invalid entries
+                if not scope_config or not isinstance(scope_config, dict):
+                    self.logger.warning(
+                        f"Skipping invalid scope entry in application '{app_name}': "
+                        f"expected dict, got {type(scope_config).__name__}"
+                    )
+                    continue
+
                 scope_config['application_id'] = app_id
                 scope_config['namespace_id'] = app_config.get('namespace_id')
                 scope_result = self.create_scope(scope_config)
@@ -1341,6 +1349,14 @@ class NullplatformSetup:
             # 4. Create parameters for this application
             parameters = app_config.get('parameters', [])
             for param_config in parameters:
+                # Skip None or invalid entries
+                if not param_config or not isinstance(param_config, dict):
+                    self.logger.warning(
+                        f"Skipping invalid parameter entry in application '{app_name}': "
+                        f"expected dict, got {type(param_config).__name__}"
+                    )
+                    continue
+
                 param_config['application_id'] = app_id
                 param_config['namespace_id'] = app_config.get('namespace_id')
 
