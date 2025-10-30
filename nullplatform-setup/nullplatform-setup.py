@@ -50,6 +50,35 @@ PARAM_TYPE_FILE = 'file'
 PARAM_ENCODING_PLAINTEXT = 'plaintext'
 PARAM_ENCODING_BASE64 = 'base64'
 
+# Valid scope request fields (per Nullplatform API schema)
+# These are the ONLY fields that can be sent in the scope creation (POST) request
+VALID_SCOPE_REQUEST_FIELDS = [
+    'name',
+    'type',
+    'provider',
+    'application_id',
+    'requested_spec',
+    'capabilities',
+    'messages',
+    'external_created'
+]
+
+# Valid scope update fields (per Nullplatform API schema)
+# These fields can be set via PATCH /scope/:id after creation
+# Note: dimensions CANNOT be set during creation, only via update
+VALID_SCOPE_UPDATE_FIELDS = [
+    'status',
+    'requested_spec',
+    'tier',
+    'capabilities',
+    'asset_name',
+    'messages',
+    'instance_id',
+    'domain',
+    'name',
+    'dimensions'  # Can only be set via PATCH, not during POST creation
+]
+
 # Environment variables
 ENV_NULLPLATFORM_API_KEY = 'NULLPLATFORM_API_KEY'
 ENV_SLACK_DRY_RUN = 'SLACK_DRY_RUN'
@@ -845,17 +874,27 @@ class NullplatformSetup:
 
         self.logger.info(f"Creating scope: {name}")
 
+        # Filter to only valid API request fields
+        # Fields like 'namespace_id', 'dimensions', 'visibility' are not part of the creation request
+        scope_def = {k: v for k, v in scope_config.items() if k in VALID_SCOPE_REQUEST_FIELDS}
+
+        # Log filtered fields for debugging
+        filtered_fields = [k for k in scope_config.keys() if k not in VALID_SCOPE_REQUEST_FIELDS]
+        if filtered_fields:
+            self.logger.debug(f"Filtered out non-API fields for scope '{name}': {', '.join(filtered_fields)}")
+
         returncode, stdout, stderr = self._run_np_command(
             ['scope', 'create'],
-            json_body=scope_config
+            json_body=scope_def
         )
 
         # Check if scope already exists
         if returncode != 0 and 'already exists' in stderr.lower():
             return self._handle_already_exists(RESOURCE_SCOPE, name)
 
-        # Build NRN if creation was successful
+        # Build NRN and handle post-creation updates if creation was successful
         nrn = None
+        scope_id = None
         if returncode == 0 and 'namespace_id' in scope_config and 'application_id' in scope_config:
             try:
                 response = json.loads(stdout)
@@ -870,7 +909,60 @@ class NullplatformSetup:
                 pass  # Will be handled by _handle_api_response
 
         # Handle API response (success or other errors)
-        return self._handle_api_response(RESOURCE_SCOPE, name, returncode, stdout, stderr, nrn=nrn)
+        result = self._handle_api_response(RESOURCE_SCOPE, name, returncode, stdout, stderr, nrn=nrn)
+
+        # Step 2: If creation succeeded and there are update-only fields, PATCH them
+        if result.status == STATUS_CREATED and scope_id:
+            # Identify fields that can only be set via PATCH (not in POST request fields)
+            update_only_fields = {
+                k: v for k, v in scope_config.items()
+                if k in VALID_SCOPE_UPDATE_FIELDS and k not in VALID_SCOPE_REQUEST_FIELDS
+            }
+
+            if update_only_fields:
+                self.logger.debug(f"Scope '{name}' has update-only fields: {', '.join(update_only_fields.keys())}")
+                update_result = self.update_scope(scope_id, name, update_only_fields)
+
+                # If update failed, log warning but don't fail overall (scope was created)
+                if update_result.status == STATUS_ERROR:
+                    self.logger.warning(f"Scope '{name}' created but update failed: {update_result.message}")
+                    result.message += f" (Warning: Post-creation update failed: {update_result.message})"
+
+        return result
+
+    def update_scope(self, scope_id: str, scope_name: str, update_fields: Dict) -> SetupResult:
+        """
+        Update a scope via PATCH.
+        Used to set fields that cannot be set during creation (e.g., dimensions).
+        """
+        self.logger.info(f"Updating scope: {scope_name} (fields: {', '.join(update_fields.keys())})")
+
+        returncode, stdout, stderr = self._run_np_command(
+            ['scope', 'patch'],
+            command_args=['--id', scope_id],
+            json_body=update_fields
+        )
+
+        # Check for success
+        if returncode == 0:
+            self.logger.info(f"✓ Updated scope: {scope_name}")
+            return SetupResult(
+                resource_type=RESOURCE_SCOPE,
+                resource_name=scope_name,
+                status=STATUS_CREATED,  # Use CREATED status since this is part of creation flow
+                message=f'Scope updated successfully',
+                resource_id=scope_id
+            )
+        else:
+            self.logger.error(f"Failed to update scope: {scope_name}")
+            self.logger.error(f"Error: {stderr}")
+            return SetupResult(
+                resource_type=RESOURCE_SCOPE,
+                resource_name=scope_name,
+                status=STATUS_ERROR,
+                message=f'Failed to update scope: {stderr}',
+                resource_id=scope_id
+            )
 
     def setup_all(self, config: Config) -> List[SetupResult]:
         """
