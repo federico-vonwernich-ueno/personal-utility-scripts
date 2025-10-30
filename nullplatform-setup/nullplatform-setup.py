@@ -269,13 +269,15 @@ class NullplatformSetup:
 
         return logger
 
-    def _scrub_sensitive_data(self, cmd: List[str], json_body: Optional[Dict] = None) -> Tuple[str, str]:
+    def _scrub_sensitive_data(self, cmd: List[str], json_body: Optional[Dict] = None,
+                             is_secret: bool = False) -> Tuple[str, str]:
         """
         Scrub sensitive data (API keys, secrets) from command and JSON body for safe logging.
 
         Args:
             cmd: Command list that may contain --api-key
             json_body: Optional JSON body that may contain sensitive values
+            is_secret: Whether this request contains secret parameter values (context flag)
 
         Returns:
             Tuple of (safe_cmd_string, safe_body_string)
@@ -308,8 +310,8 @@ class NullplatformSetup:
                 if field in scrubbed_body:
                     scrubbed_body[field] = '[REDACTED]'
 
-            # Scrub parameter values if marked as secret
-            if scrubbed_body.get('secret') is True and 'value' in scrubbed_body:
+            # Scrub parameter values if marked as secret (either in JSON body or via context)
+            if (scrubbed_body.get('secret') is True or is_secret) and 'value' in scrubbed_body:
                 scrubbed_body['value'] = '[REDACTED]'
 
             safe_body_str = json.dumps(scrubbed_body, indent=2)
@@ -317,7 +319,7 @@ class NullplatformSetup:
         return safe_cmd_str, safe_body_str
 
     def _run_np_command(self, command: List[str], json_body: Optional[Dict] = None,
-                        account_id: Optional[str] = None) -> Tuple[int, str, str]:
+                        account_id: Optional[str] = None, is_secret: bool = False) -> Tuple[int, str, str]:
         """
         Run an np CLI command and return (returncode, stdout, stderr)
 
@@ -325,6 +327,7 @@ class NullplatformSetup:
             command: Command parts (e.g., ['application', 'create'])
             json_body: Optional JSON body to pass via --body
             account_id: Optional account ID to pass via --account_id
+            is_secret: Whether this request contains secret parameter values (for log scrubbing)
         """
         cmd = [self.np_path] + command
 
@@ -349,7 +352,7 @@ class NullplatformSetup:
             cmd.extend(['--body', temp_file])
 
         # Scrub sensitive data (API keys, secrets) before logging
-        safe_cmd_str, safe_body_str = self._scrub_sensitive_data(cmd, json_body)
+        safe_cmd_str, safe_body_str = self._scrub_sensitive_data(cmd, json_body, is_secret)
 
         self.logger.debug(f"Running: {safe_cmd_str}")
         if json_body:
@@ -744,9 +747,13 @@ class NullplatformSetup:
             )
             self.logger.debug(f"Using application-level NRN for parameter value: {param_name}")
 
+        # Extract secret flag to ensure values are scrubbed from logs
+        is_secret = param_config.get('secret', False)
+
         returncode, stdout, stderr = self._run_np_command(
             ['parameter', 'value', 'create', '--id', str(param_id)],
-            json_body=value_config
+            json_body=value_config,
+            is_secret=is_secret
         )
 
         if returncode == 0:
@@ -957,7 +964,8 @@ class NullplatformSetup:
                     value_context = {
                         'value': value_config.get('value'),
                         'application_id': param_config.get('application_id'),
-                        'namespace_id': param_config.get('namespace_id')
+                        'namespace_id': param_config.get('namespace_id'),
+                        'secret': param_config.get('secret', False)  # Pass secret flag for log scrubbing
                     }
 
                     # Add scope if specified
