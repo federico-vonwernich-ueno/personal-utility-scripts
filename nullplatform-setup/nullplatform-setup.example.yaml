@@ -41,6 +41,7 @@ applications:
         value: "postgres://localhost:5432/mydb"
 
       # Secret parameter
+      # Note: Values are automatically redacted from logs when secret=true
       - name: "API_KEY"
         value: "sk-xxxxx"
         secret: true
@@ -194,3 +195,23 @@ applications:
           scheduled_stop:
             enabled: false
             timer: "3600"
+
+  # Example 4: Validation - Invalid entries are skipped with warnings
+  # Warning format: "Skipping invalid [scope|parameter] entry: expected dict, got [type]"
+  - name: "validation-example"
+    namespace: "my-namespace"
+    repository_url: "https://github.com/my-org/validation-example"
+
+    scopes:
+      - name: "valid-scope"
+        type: "web_pool"
+      # - null              # INVALID: skipped with warning
+      # - "not-a-dict"      # INVALID: skipped with warning
+
+    parameters:
+      - name: "VALID_PARAM"
+        value: "valid-value"
+      # - null              # INVALID: skipped with warning
+      # -                   # INVALID: empty, skipped
+
+    # Valid entries are processed even when invalid ones exist

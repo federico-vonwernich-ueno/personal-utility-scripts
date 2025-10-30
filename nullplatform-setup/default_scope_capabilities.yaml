@@ -1,0 +1,69 @@
+# Default Scope Capabilities Template
+#
+# These are reasonable defaults based on Nullplatform's scope creation schema.
+# Users can override any of these in their application YAML config.
+#
+# You can customize these defaults by:
+# 1. Editing this file directly (affects all future setups)
+# 2. Using --scope-defaults flag to point to your own template file
+# 3. Setting NULLPLATFORM_SCOPE_DEFAULTS environment variable
+
+# Default capabilities for all scopes
+capabilities:
+  continuous_delivery:
+    enabled: false
+
+  logs:
+    throttling:
+      unit: "line_seconds"
+      value: 1000
+      enabled: false
+    provider: "none"
+
+  metrics:
+    custom_metrics_provider: "cloudwatch_metrics"
+    performance_metrics_provider: "cloudwatch_metrics"
+
+  spot_instances:
+    target_percentage: 80
+    enabled: false
+
+  auto_scaling:
+    cpu:
+      max_percentage: 50
+      min_percentage: 25
+    instances:
+      max_amount: 10
+      min_amount: 2
+      amount: 1
+    enabled: false
+
+  memory:
+    memory_in_gb: 1
+
+  storage:
+    storage_in_gb: 8
+
+  processor:
+    instance: ""
+    type: "cpu"
+
+  visibility:
+    reachability: "account"
+
+  health_check:
+    type: "http"
+    path: "/health"
+    configuration:
+      timeout: 2
+      interval: 5
+
+  scheduled_stop:
+    timer: "3600"
+    enabled: false
+
+# Default requested_spec for all scopes
+requested_spec:
+  cpu_profile: "standard"
+  memory_in_gb: 1
+  local_storage_in_gb: 8

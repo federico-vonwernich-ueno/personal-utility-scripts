@@ -50,19 +50,41 @@ PARAM_TYPE_FILE = 'file'
 PARAM_ENCODING_PLAINTEXT = 'plaintext'
 PARAM_ENCODING_BASE64 = 'base64'
 
+# Field names - centralized to avoid typos and enable refactoring
+FIELD_NAME = 'name'
+FIELD_VALUE = 'value'
+FIELD_VALUES = 'values'
+FIELD_TYPE = 'type'
+FIELD_ENCODING = 'encoding'
+FIELD_SECRET = 'secret'
+FIELD_READ_ONLY = 'read_only'
+FIELD_VARIABLE = 'variable'
+FIELD_DESTINATION_PATH = 'destination_path'
+FIELD_DIMENSIONS = 'dimensions'
+FIELD_SCOPE = 'scope'
+FIELD_SCOPE_ID = 'scope_id'
+FIELD_APPLICATION_ID = 'application_id'
+FIELD_NAMESPACE_ID = 'namespace_id'
+FIELD_NAMESPACE = 'namespace'
+FIELD_REPOSITORY_URL = 'repository_url'
+FIELD_CAPABILITIES = 'capabilities'
+FIELD_REQUESTED_SPEC = 'requested_spec'
+FIELD_NRN = 'nrn'
+FIELD_ID = 'id'
+
 # Valid scope request fields (per Nullplatform API schema)
 # These are the ONLY fields that can be sent in the scope creation (POST) request
 # Note: dimensions is not in the documented POST schema, but testing if API accepts it anyway
 VALID_SCOPE_REQUEST_FIELDS = [
-    'name',
-    'type',
+    FIELD_NAME,
+    FIELD_TYPE,
     'provider',
-    'application_id',
-    'requested_spec',
-    'capabilities',
+    FIELD_APPLICATION_ID,
+    FIELD_REQUESTED_SPEC,
+    FIELD_CAPABILITIES,
     'messages',
     'external_created',
-    'dimensions'  # Testing: not documented but might work in practice
+    FIELD_DIMENSIONS  # Testing: not documented but might work in practice
 ]
 
 # Valid scope update fields (per Nullplatform API schema)
@@ -150,6 +172,37 @@ DEFAULT_REQUESTED_SPEC = {
     "local_storage_in_gb": 8
 }
 
+# Capability validation schema - defines expected types for each field
+# Format: 'path.to.field': expected_type (or tuple of types for multiple valid types)
+CAPABILITY_VALIDATION_SCHEMA = {
+    'continuous_delivery.enabled': bool,
+    'logs.provider': str,
+    'logs.throttling.enabled': bool,
+    'logs.throttling.value': (int, float),
+    'logs.throttling.unit': str,
+    'metrics.custom_metrics_provider': str,
+    'metrics.performance_metrics_provider': str,
+    'spot_instances.enabled': bool,
+    'spot_instances.target_percentage': (int, float),
+    'auto_scaling.enabled': bool,
+    'auto_scaling.cpu.min_percentage': (int, float),
+    'auto_scaling.cpu.max_percentage': (int, float),
+    'auto_scaling.instances.min_amount': int,
+    'auto_scaling.instances.max_amount': int,
+    'auto_scaling.instances.amount': int,
+    'memory.memory_in_gb': (int, float),
+    'storage.storage_in_gb': (int, float),
+    'processor.type': str,
+    'processor.instance': str,
+    'visibility.reachability': str,
+    'health_check.type': str,
+    'health_check.path': str,
+    'health_check.configuration.timeout': (int, float),
+    'health_check.configuration.interval': (int, float),
+    'scheduled_stop.enabled': bool,
+    'scheduled_stop.timer': (str, int),
+}
+
 # Environment variables
 ENV_NULLPLATFORM_API_KEY = 'NULLPLATFORM_API_KEY'
 ENV_SLACK_DRY_RUN = 'SLACK_DRY_RUN'
@@ -180,7 +233,7 @@ class NullplatformSetup:
     """Handles nullplatform resource creation via np CLI"""
 
     def __init__(self, api_key: Optional[str] = None, dry_run: bool = False,
-                 verbose: bool = False, np_path: str = "np"):
+                 verbose: bool = False, np_path: str = "np", scope_defaults_path: Optional[str] = None):
         self.api_key = api_key or os.environ.get(ENV_NULLPLATFORM_API_KEY)
         self.organization_id = None  # Set later from config in setup_all()
         self.account_id = None  # Set later from config in setup_all()
@@ -196,6 +249,9 @@ class NullplatformSetup:
             'parameters': {},    # name -> id
             'scopes': {}         # name -> id
         }
+
+        # Load scope defaults from YAML file
+        self.scope_defaults = self._load_scope_defaults(scope_defaults_path)
 
         # Verify np command is available (skip in dry-run mode)
         if not self.dry_run:
@@ -237,6 +293,66 @@ class NullplatformSetup:
             self.logger.warning(
                 f"Warning: Could not verify np command: {e}"
             )
+
+    def _load_scope_defaults(self, scope_defaults_path: Optional[str] = None) -> Dict:
+        """
+        Load scope defaults from YAML file.
+
+        Args:
+            scope_defaults_path: Optional path to custom defaults file.
+                Falls back to:
+                1. Environment variable NULLPLATFORM_SCOPE_DEFAULTS
+                2. default_scope_capabilities.yaml in script directory
+                3. Built-in constants as last resort
+
+        Returns:
+            Dictionary with 'capabilities' and 'requested_spec' keys
+        """
+        # Determine which file to use
+        if scope_defaults_path:
+            defaults_file = scope_defaults_path
+        else:
+            # Try environment variable
+            defaults_file = os.environ.get('NULLPLATFORM_SCOPE_DEFAULTS')
+            if not defaults_file:
+                # Use default file in script directory
+                script_dir = os.path.dirname(os.path.abspath(__file__))
+                defaults_file = os.path.join(script_dir, 'default_scope_capabilities.yaml')
+
+        # Try to load from file
+        if defaults_file and os.path.exists(defaults_file):
+            try:
+                with open(defaults_file, 'r') as f:
+                    defaults = yaml.safe_load(f)
+
+                # Validate structure
+                if not isinstance(defaults, dict):
+                    raise ValueError(f"Defaults file must contain a dictionary, got {type(defaults)}")
+
+                if 'capabilities' not in defaults or 'requested_spec' not in defaults:
+                    raise ValueError("Defaults file must contain 'capabilities' and 'requested_spec' keys")
+
+                # Log success (but defer actual logging until logger is set up)
+                # We'll use print during __init__ since logger may not be ready yet
+                return defaults
+
+            except Exception as e:
+                # Fall back to built-in defaults on any error
+                print(f"Warning: Could not load scope defaults from {defaults_file}: {e}")
+                print("Using built-in defaults instead.")
+                return {
+                    'capabilities': DEFAULT_SCOPE_CAPABILITIES,
+                    'requested_spec': DEFAULT_REQUESTED_SPEC
+                }
+        else:
+            # No file found, use built-in defaults
+            if defaults_file:
+                print(f"Warning: Scope defaults file not found: {defaults_file}")
+                print("Using built-in defaults instead.")
+            return {
+                'capabilities': DEFAULT_SCOPE_CAPABILITIES,
+                'requested_spec': DEFAULT_REQUESTED_SPEC
+            }
 
     def _setup_logger(self) -> logging.Logger:
         """Configure logging to console and file"""
@@ -634,7 +750,11 @@ class NullplatformSetup:
                     message=f'Failed to parse response: {stdout}'
                 )
         else:
-            # Command failed
+            # Command failed - check if it's because resource already exists
+            if 'already exists' in stderr.lower():
+                return self._handle_already_exists(resource_type, resource_name)
+
+            # Other error
             self.logger.error(f"Failed to create {resource_type}: {stderr}")
             return SetupResult(
                 resource_type=resource_type,
@@ -849,10 +969,6 @@ class NullplatformSetup:
             json_body=api_config
         )
 
-        # Check if application already exists
-        if returncode != 0 and 'already exists' in stderr.lower():
-            return self._handle_already_exists(RESOURCE_APPLICATION, name)
-
         # Build NRN if creation was successful
         nrn = None
         if returncode == 0 and 'namespace_id' in app_config:
@@ -867,17 +983,19 @@ class NullplatformSetup:
         # Handle API response (success or other errors)
         return self._handle_api_response(RESOURCE_APPLICATION, name, returncode, stdout, stderr, nrn=nrn)
 
-    def create_parameter(self, param_config: Dict) -> SetupResult:
+    def _extract_parameter_metadata(self, param_config: Dict) -> Tuple[Optional[Dict], Optional[SetupResult]]:
         """
-        Create a parameter and optionally set its value(s).
+        Extract and validate parameter metadata, setting defaults for API fields.
 
-        Supports two modes:
-        1. Single value: param_config contains 'value' field
-        2. Multiple values: param_config contains 'values' array, each with its own scope/dimensions
+        Args:
+            param_config: Raw parameter configuration from YAML
+
+        Returns:
+            Tuple of (param_def_dict, error_result):
+            - param_def_dict: Dictionary ready for API request (None if error)
+            - error_result: SetupResult if validation failed (None if success)
         """
         name = param_config.get('name')
-
-        self.logger.info(f"Creating parameter: {name}")
 
         # Build the parameter definition with required API fields
         # Remove fields that are not part of the API schema
@@ -893,7 +1011,7 @@ class NullplatformSetup:
             param_def['nrn'] = param_nrn
         else:
             self.logger.error(f"Missing application_id or namespace_id for parameter {name}")
-            return SetupResult(
+            return None, SetupResult(
                 resource_type=RESOURCE_PARAMETER,
                 resource_name=name,
                 status=STATUS_ERROR,
@@ -925,75 +1043,159 @@ class NullplatformSetup:
         # Validate required conditional fields
         if param_def['type'] == PARAM_TYPE_FILE and 'destination_path' not in param_def:
             self.logger.error(f"Parameter {name} has type=file but missing destination_path")
-            return SetupResult(
+            return None, SetupResult(
                 resource_type=RESOURCE_PARAMETER,
                 resource_name=name,
                 status=STATUS_ERROR,
                 message='File type parameters require destination_path'
             )
 
+        return param_def, None
+
+    def _create_parameter_definition(self, name: str, param_def: Dict) -> SetupResult:
+        """
+        Create the parameter definition via API.
+
+        Args:
+            name: Parameter name
+            param_def: Parameter definition dictionary (already validated)
+
+        Returns:
+            SetupResult indicating success or failure
+        """
         returncode, stdout, stderr = self._run_np_command(
             ['parameter', 'create'],
             json_body=param_def
         )
 
-        # Check if parameter already exists
-        if returncode != 0 and 'already exists' in stderr.lower():
-            return self._handle_already_exists(RESOURCE_PARAMETER, name)
-
         # Handle creation success/failure
-        result = self._handle_api_response(RESOURCE_PARAMETER, name, returncode, stdout, stderr, nrn=param_nrn)
+        param_nrn = param_def.get('nrn')
+        return self._handle_api_response(RESOURCE_PARAMETER, name, returncode, stdout, stderr, nrn=param_nrn)
 
-        # If parameter created successfully, set value(s)
+    def _prepare_parameter_values(self, param_config: Dict, name: str) -> Tuple[Optional[List[Dict]], Optional[str]]:
+        """
+        Convert single value or multiple values to standardized list format.
+
+        Args:
+            param_config: Parameter configuration from YAML
+            name: Parameter name
+
+        Returns:
+            Tuple of (values_list, error_message):
+            - values_list: List of value configurations (None if error)
+            - error_message: Error message if invalid (None if success)
+        """
+        if 'values' in param_config:
+            # Multiple values: validate it's a list
+            values_list = param_config['values']
+            if not isinstance(values_list, list):
+                return None, "Invalid 'values' field: must be a list"
+
+            self.logger.info(f"Creating {len(values_list)} value(s) for parameter: {name}")
+            return values_list, None
+
+        elif 'value' in param_config:
+            # Single value: wrap in list for uniform processing
+            return [param_config], None
+
+        else:
+            # No values specified
+            return None, None
+
+    def _build_value_context(self, value_config: Dict, param_config: Dict, index: int = 0) -> Dict:
+        """
+        Build context dictionary for a parameter value, resolving scope and dimensions.
+
+        Args:
+            value_config: Individual value configuration
+            param_config: Parent parameter configuration
+            index: Index of this value (for logging)
+
+        Returns:
+            Dictionary with value, application_id, namespace_id, scope_id (if applicable), dimensions (if applicable)
+        """
+        name = param_config.get('name')
+        value_context = {
+            'value': value_config.get('value'),
+            'application_id': param_config.get('application_id'),
+            'namespace_id': param_config.get('namespace_id'),
+            'secret': param_config.get('secret', False)  # Pass secret flag for log scrubbing
+        }
+
+        # Add scope if specified
+        if 'scope' in value_config:
+            scope_name = value_config['scope']
+            scope_id = self.resource_ids['scopes'].get(scope_name)
+            if scope_id:
+                value_context['scope_id'] = scope_id
+            else:
+                self.logger.warning(f"Scope '{scope_name}' not found for parameter '{name}' value #{index+1}")
+
+        # Add dimensions if specified
+        if 'dimensions' in value_config:
+            value_context['dimensions'] = value_config['dimensions']
+
+        return value_context
+
+    def _create_all_parameter_values(self, name: str, param_id: str, values_list: List[Dict], param_config: Dict) -> str:
+        """
+        Create all values for a parameter.
+
+        Args:
+            name: Parameter name
+            param_id: Parameter ID
+            values_list: List of value configurations
+            param_config: Parent parameter configuration
+
+        Returns:
+            Summary message with success/failure counts
+        """
+        success_count = 0
+        messages = []
+
+        for i, value_config in enumerate(values_list):
+            # Build context for this value
+            value_context = self._build_value_context(value_config, param_config, i)
+
+            # Create the value
+            success, message = self._create_parameter_value(name, param_id, value_context)
+            messages.append(f"Value #{i+1}: {message}")
+            if success:
+                success_count += 1
+
+        return f"Parameter created with {success_count}/{len(values_list)} values set. " + "; ".join(messages)
+
+    def create_parameter(self, param_config: Dict) -> SetupResult:
+        """
+        Create a parameter and optionally set its value(s).
+
+        Supports two modes:
+        1. Single value: param_config contains 'value' field
+        2. Multiple values: param_config contains 'values' array, each with its own scope/dimensions
+        """
+        name = param_config.get('name')
+        self.logger.info(f"Creating parameter: {name}")
+
+        # Step 1: Extract and validate parameter metadata
+        param_def, error_result = self._extract_parameter_metadata(param_config)
+        if error_result:
+            return error_result
+
+        # Step 2: Create parameter definition
+        result = self._create_parameter_definition(name, param_def)
+
+        # Step 3: If parameter created successfully, set value(s)
         if result.status == STATUS_CREATED:
-            if 'values' in param_config:
-                # Multiple values: loop through and create each one
-                values_list = param_config['values']
-                if not isinstance(values_list, list):
-                    self.logger.error(f"Parameter '{name}' has 'values' field but it's not a list")
-                    result.message = "Invalid 'values' field: must be a list"
-                    result.status = STATUS_ERROR
-                    return result
+            values_list, error_message = self._prepare_parameter_values(param_config, name)
 
-                self.logger.info(f"Creating {len(values_list)} value(s) for parameter: {name}")
-                success_count = 0
-                messages = []
+            if error_message:
+                result.message = error_message
+                result.status = STATUS_ERROR
+                return result
 
-                for i, value_config in enumerate(values_list):
-                    # Build context for this value
-                    value_context = {
-                        'value': value_config.get('value'),
-                        'application_id': param_config.get('application_id'),
-                        'namespace_id': param_config.get('namespace_id'),
-                        'secret': param_config.get('secret', False)  # Pass secret flag for log scrubbing
-                    }
-
-                    # Add scope if specified
-                    if 'scope' in value_config:
-                        scope_name = value_config['scope']
-                        scope_id = self.resource_ids['scopes'].get(scope_name)
-                        if scope_id:
-                            value_context['scope_id'] = scope_id
-                        else:
-                            self.logger.warning(f"Scope '{scope_name}' not found for parameter value #{i+1}")
-
-                    # Add dimensions if specified
-                    if 'dimensions' in value_config:
-                        value_context['dimensions'] = value_config['dimensions']
-
-                    # Create the value
-                    success, message = self._create_parameter_value(name, result.resource_id, value_context)
-                    messages.append(f"Value #{i+1}: {message}")
-                    if success:
-                        success_count += 1
-
-                # Update result message
-                result.message = f"Parameter created with {success_count}/{len(values_list)} values set. " + "; ".join(messages)
-
-            elif 'value' in param_config:
-                # Single value: use existing logic
-                success, message = self._create_parameter_value(name, result.resource_id, param_config)
-                result.message = message
+            if values_list:
+                # Create all values and update result message
+                result.message = self._create_all_parameter_values(name, result.resource_id, values_list, param_config)
 
         return result
 
@@ -1015,9 +1217,46 @@ class NullplatformSetup:
 
         return result
 
+    def _validate_capability_field(self, capabilities: Dict, scope_name: str,
+                                   field_path: str, expected_type: type) -> Tuple[bool, Optional[str]]:
+        """
+        Validate a single capability field using schema.
+
+        Args:
+            capabilities: Root capabilities dict
+            scope_name: Scope name for error messages
+            field_path: Dot-separated path like 'logs.throttling.enabled'
+            expected_type: Expected type or tuple of types
+
+        Returns:
+            Tuple of (is_valid, error_message)
+        """
+        path_parts = field_path.split('.')
+        current = capabilities
+
+        # Navigate to parent of final field, validating structure along the way
+        for i, key in enumerate(path_parts[:-1]):
+            if key not in current:
+                return True, None  # Field not present, skip validation
+
+            if not isinstance(current[key], dict):
+                parent_path = '.'.join(path_parts[:i+1])
+                return False, f"Scope '{scope_name}': capabilities.{parent_path} must be an object"
+
+            current = current[key]
+
+        # Validate final field type
+        final_key = path_parts[-1]
+        if final_key in current:
+            if not isinstance(current[final_key], expected_type):
+                type_name = expected_type.__name__ if hasattr(expected_type, '__name__') else str(expected_type)
+                return False, f"Scope '{scope_name}': capabilities.{field_path} must be {type_name}"
+
+        return True, None
+
     def _validate_scope_capabilities(self, capabilities: Dict, scope_name: str) -> Tuple[bool, Optional[str]]:
         """
-        Validate scope capabilities structure.
+        Validate scope capabilities structure using schema.
 
         Returns:
             Tuple of (is_valid, error_message)
@@ -1025,128 +1264,13 @@ class NullplatformSetup:
         if not isinstance(capabilities, dict):
             return False, f"Scope '{scope_name}': capabilities must be an object/dict"
 
-        # Validate continuous_delivery
-        if 'continuous_delivery' in capabilities:
-            cd = capabilities['continuous_delivery']
-            if not isinstance(cd, dict):
-                return False, f"Scope '{scope_name}': capabilities.continuous_delivery must be an object"
-            if 'enabled' in cd and not isinstance(cd['enabled'], bool):
-                return False, f"Scope '{scope_name}': capabilities.continuous_delivery.enabled must be boolean"
-
-        # Validate logs
-        if 'logs' in capabilities:
-            logs = capabilities['logs']
-            if not isinstance(logs, dict):
-                return False, f"Scope '{scope_name}': capabilities.logs must be an object"
-            if 'provider' in logs and not isinstance(logs['provider'], str):
-                return False, f"Scope '{scope_name}': capabilities.logs.provider must be string"
-            if 'throttling' in logs:
-                throttling = logs['throttling']
-                if not isinstance(throttling, dict):
-                    return False, f"Scope '{scope_name}': capabilities.logs.throttling must be an object"
-                if 'enabled' in throttling and not isinstance(throttling['enabled'], bool):
-                    return False, f"Scope '{scope_name}': capabilities.logs.throttling.enabled must be boolean"
-                if 'value' in throttling and not isinstance(throttling['value'], (int, float)):
-                    return False, f"Scope '{scope_name}': capabilities.logs.throttling.value must be number"
-
-        # Validate metrics
-        if 'metrics' in capabilities:
-            metrics = capabilities['metrics']
-            if not isinstance(metrics, dict):
-                return False, f"Scope '{scope_name}': capabilities.metrics must be an object"
-
-        # Validate spot_instances
-        if 'spot_instances' in capabilities:
-            spot = capabilities['spot_instances']
-            if not isinstance(spot, dict):
-                return False, f"Scope '{scope_name}': capabilities.spot_instances must be an object"
-            if 'enabled' in spot and not isinstance(spot['enabled'], bool):
-                return False, f"Scope '{scope_name}': capabilities.spot_instances.enabled must be boolean"
-            if 'target_percentage' in spot and not isinstance(spot['target_percentage'], (int, float)):
-                return False, f"Scope '{scope_name}': capabilities.spot_instances.target_percentage must be number"
-
-        # Validate auto_scaling
-        if 'auto_scaling' in capabilities:
-            auto_scaling = capabilities['auto_scaling']
-            if not isinstance(auto_scaling, dict):
-                return False, f"Scope '{scope_name}': capabilities.auto_scaling must be an object"
-            if 'enabled' in auto_scaling and not isinstance(auto_scaling['enabled'], bool):
-                return False, f"Scope '{scope_name}': capabilities.auto_scaling.enabled must be boolean"
-            if 'cpu' in auto_scaling:
-                cpu = auto_scaling['cpu']
-                if not isinstance(cpu, dict):
-                    return False, f"Scope '{scope_name}': capabilities.auto_scaling.cpu must be an object"
-                for field in ['min_percentage', 'max_percentage']:
-                    if field in cpu and not isinstance(cpu[field], (int, float)):
-                        return False, f"Scope '{scope_name}': capabilities.auto_scaling.cpu.{field} must be number"
-            if 'instances' in auto_scaling:
-                instances = auto_scaling['instances']
-                if not isinstance(instances, dict):
-                    return False, f"Scope '{scope_name}': capabilities.auto_scaling.instances must be an object"
-                for field in ['min_amount', 'max_amount', 'amount']:
-                    if field in instances and not isinstance(instances[field], int):
-                        return False, f"Scope '{scope_name}': capabilities.auto_scaling.instances.{field} must be integer"
-
-        # Validate memory
-        if 'memory' in capabilities:
-            memory = capabilities['memory']
-            if not isinstance(memory, dict):
-                return False, f"Scope '{scope_name}': capabilities.memory must be an object"
-            if 'memory_in_gb' in memory and not isinstance(memory['memory_in_gb'], (int, float)):
-                return False, f"Scope '{scope_name}': capabilities.memory.memory_in_gb must be number"
-
-        # Validate storage
-        if 'storage' in capabilities:
-            storage = capabilities['storage']
-            if not isinstance(storage, dict):
-                return False, f"Scope '{scope_name}': capabilities.storage must be an object"
-            if 'storage_in_gb' in storage and not isinstance(storage['storage_in_gb'], (int, float)):
-                return False, f"Scope '{scope_name}': capabilities.storage.storage_in_gb must be number"
-
-        # Validate processor
-        if 'processor' in capabilities:
-            processor = capabilities['processor']
-            if not isinstance(processor, dict):
-                return False, f"Scope '{scope_name}': capabilities.processor must be an object"
-            if 'type' in processor and not isinstance(processor['type'], str):
-                return False, f"Scope '{scope_name}': capabilities.processor.type must be string"
-            if 'instance' in processor and not isinstance(processor['instance'], str):
-                return False, f"Scope '{scope_name}': capabilities.processor.instance must be string"
-
-        # Validate visibility
-        if 'visibility' in capabilities:
-            visibility = capabilities['visibility']
-            if not isinstance(visibility, dict):
-                return False, f"Scope '{scope_name}': capabilities.visibility must be an object"
-            if 'reachability' in visibility and not isinstance(visibility['reachability'], str):
-                return False, f"Scope '{scope_name}': capabilities.visibility.reachability must be string"
-
-        # Validate health_check
-        if 'health_check' in capabilities:
-            health_check = capabilities['health_check']
-            if not isinstance(health_check, dict):
-                return False, f"Scope '{scope_name}': capabilities.health_check must be an object"
-            if 'type' in health_check and not isinstance(health_check['type'], str):
-                return False, f"Scope '{scope_name}': capabilities.health_check.type must be string"
-            if 'path' in health_check and not isinstance(health_check['path'], str):
-                return False, f"Scope '{scope_name}': capabilities.health_check.path must be string"
-            if 'configuration' in health_check:
-                config = health_check['configuration']
-                if not isinstance(config, dict):
-                    return False, f"Scope '{scope_name}': capabilities.health_check.configuration must be an object"
-                for field in ['timeout', 'interval']:
-                    if field in config and not isinstance(config[field], (int, float)):
-                        return False, f"Scope '{scope_name}': capabilities.health_check.configuration.{field} must be number"
-
-        # Validate scheduled_stop
-        if 'scheduled_stop' in capabilities:
-            scheduled_stop = capabilities['scheduled_stop']
-            if not isinstance(scheduled_stop, dict):
-                return False, f"Scope '{scope_name}': capabilities.scheduled_stop must be an object"
-            if 'enabled' in scheduled_stop and not isinstance(scheduled_stop['enabled'], bool):
-                return False, f"Scope '{scope_name}': capabilities.scheduled_stop.enabled must be boolean"
-            if 'timer' in scheduled_stop and not isinstance(scheduled_stop['timer'], (str, int)):
-                return False, f"Scope '{scope_name}': capabilities.scheduled_stop.timer must be string or number"
+        # Validate all fields defined in schema
+        for field_path, expected_type in CAPABILITY_VALIDATION_SCHEMA.items():
+            is_valid, error_msg = self._validate_capability_field(
+                capabilities, scope_name, field_path, expected_type
+            )
+            if not is_valid:
+                return False, error_msg
 
         return True, None
 
@@ -1160,9 +1284,9 @@ class NullplatformSetup:
         """
         if not user_capabilities:
             self.logger.debug("No user capabilities provided, using defaults")
-            return DEFAULT_SCOPE_CAPABILITIES.copy()
+            return self.scope_defaults['capabilities'].copy()
 
-        merged = self._deep_merge_dict(DEFAULT_SCOPE_CAPABILITIES, user_capabilities)
+        merged = self._deep_merge_dict(self.scope_defaults['capabilities'], user_capabilities)
         self.logger.debug(f"Merged user capabilities with defaults")
         return merged
 
@@ -1197,7 +1321,7 @@ class NullplatformSetup:
             user_spec = working_config['requested_spec']
             if isinstance(user_spec, dict):
                 # User provided object structure - merge with defaults
-                merged_spec = self._deep_merge_dict(DEFAULT_REQUESTED_SPEC, user_spec)
+                merged_spec = self._deep_merge_dict(self.scope_defaults['requested_spec'], user_spec)
                 working_config['requested_spec'] = merged_spec
                 self.logger.debug(f"Merged requested_spec with defaults: {merged_spec}")
             else:
@@ -1205,7 +1329,7 @@ class NullplatformSetup:
                 self.logger.warning(f"Scope '{name}': requested_spec should be an object with cpu_profile, memory_in_gb, local_storage_in_gb")
         else:
             # No requested_spec provided - use defaults
-            working_config['requested_spec'] = DEFAULT_REQUESTED_SPEC.copy()
+            working_config['requested_spec'] = self.scope_defaults['requested_spec'].copy()
             self.logger.debug(f"Using default requested_spec for scope '{name}'")
 
         # Filter to only valid API request fields
@@ -1226,10 +1350,6 @@ class NullplatformSetup:
             ['scope', 'create'],
             json_body=scope_def
         )
-
-        # Check if scope already exists
-        if returncode != 0 and 'already exists' in stderr.lower():
-            return self._handle_already_exists(RESOURCE_SCOPE, name)
 
         # Build NRN and handle post-creation updates if creation was successful
         nrn = None
@@ -1791,6 +1911,11 @@ Environment Variables:
         help='Path to np CLI binary (default: np)'
     )
 
+    parser.add_argument(
+        '--scope-defaults',
+        help='Path to custom scope defaults YAML file (default: default_scope_capabilities.yaml)'
+    )
+
     args = parser.parse_args()
 
     # Get API key
@@ -1804,7 +1929,8 @@ Environment Variables:
         api_key=api_key,
         dry_run=args.dry_run,
         verbose=args.verbose,
-        np_path=args.np_path
+        np_path=args.np_path,
+        scope_defaults_path=args.scope_defaults
     )
 
     # Load configuration

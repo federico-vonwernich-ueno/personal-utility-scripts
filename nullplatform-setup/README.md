@@ -409,6 +409,8 @@ parameters:
 - **Application creation fails**: Skips its scopes and parameters, continues with next app
 - **Scope not found**: Warns but continues (parameter becomes application-level)
 - **Resource already exists**: Logs warning, attempts to retrieve ID, continues
+- **Invalid scope capabilities**: Validates scope capabilities structure before API call, fails fast with clear error message
+- **None/invalid entries**: Skips None or invalid dict entries in scopes/parameters lists with warnings, continues processing valid entries
 
 ## Example Output
 
@@ -529,6 +531,31 @@ The script uses a custom Slack notification template located at `templates/nullp
 - Mark parameters as secrets when they contain sensitive data
 - Rotate API keys regularly
 - Use separate API keys for different environments
+
+## Security Features
+
+Sensitive data is automatically redacted in all logs (debug, dry-run, errors), making logs safe to share for troubleshooting.
+
+**What's Redacted:**
+- API keys → `[REDACTED]`
+- Secret parameter values (when `secret: true`)
+- Sensitive field names: `api_key`, `token`, `password`, `credential`
+
+**Example:**
+```yaml
+parameters:
+  - name: "DB_PASSWORD"
+    value: "secret123"
+    secret: true
+```
+
+Logs show `"value": "[REDACTED]"` while API requests contain the actual value.
+
+**Best Practices:**
+- Mark all sensitive parameters with `secret: true`
+- Use environment variables for API keys
+- Review logs before sharing (despite redaction)
+- Rotate keys immediately if exposed
 
 ## Related Documentation
 
